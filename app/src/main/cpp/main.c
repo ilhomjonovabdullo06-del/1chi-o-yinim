@@ -17,7 +17,7 @@
 #define SEG 28
 #define ROUND_SEC 90.f
 #define PUNCH_T 0.28f
-#define EPT (diff == 1 ? 0.14f : 0.22f)   // dushman zarbasi davomiyligi
+#define EPT (diff >= 1 ? 0.14f : 0.22f)   // dushman zarbasi davomiyligi
 
 typedef struct { float cx, cy, r, vx, vy; int pid; } Joy;
 typedef struct { float t, dx, dy; int hit, was; } Arm;
@@ -267,26 +267,25 @@ static void arm_update(Arm *a, Joy *j, int right, float dt) {
     a->was = m > 0.5f;
 }
 
-static void ko(int player_won) {
-    finalres = player_won ? 1 : 2; isko = 1; state = S_END; stimer = 0; bell(3);
-}
-static void time_up(void) {
-    int res = php > ehp + 0.5f ? 1 : (ehp > php + 0.5f ? 2 : 3);
-    lastres = res;
+static void end_round(int res, int byko) {
+    lastres = res; isko = byko;
     if (res == 1) pw++; else if (res == 2) ew++;
     bell(3);
     if (pw == 2 || ew == 2 || rnd >= 3) {
         finalres = pw > ew ? 1 : (ew > pw ? 2 : 3);
         state = S_END; stimer = 0;
     } else {
-        state = S_BREAK; stimer = 3.5f;
+        state = S_BREAK; stimer = 0;
     }
+}
+static void time_up(void) {
+    end_round(php > ehp + 0.5f ? 1 : (ehp > php + 0.5f ? 2 : 3), 0);
 }
 
 static void update(float dt) {
     now_t += dt;
     if (state == S_INTRO) { stimer -= dt; if (stimer <= 0) { state = S_FIGHT; bell(1); } return; }
-    if (state == S_BREAK) { stimer -= dt; if (stimer <= 0) { rnd++; start_round(); } return; }
+    if (state == S_BREAK) { stimer += dt; return; }
     if (state == S_END) { stimer += dt; return; }
     if (state != S_FIGHT) return;
 
@@ -322,7 +321,7 @@ static void update(float dt) {
         if (d > 26 * U) sp = 16 * U; else if (d < 20 * U) sp = -12 * U;
         float st = sinf(now_t * 1.3f) * 8 * U;
         ex += (nx * sp - ny * st) * dt; ey += (ny * sp + nx * st) * dt;
-        if (ecd <= 0 && d < 28 * U) { estate = 1; etimer = (diff == 1) ? 0.22f : 0.35f; ehand = rand() & 1; }
+        if (ecd <= 0 && d < 28 * U) { estate = 1; etimer = (diff >= 1) ? 0.22f : 0.35f; ehand = rand() & 1; }
     } else if (estate == 1) {
         etimer -= dt;
         if (etimer <= 0) { estate = 2; etimer = EPT; ehit = 0; }
@@ -340,12 +339,12 @@ static void update(float dt) {
         }
         if (etimer <= 0) {
             estate = 0;
-            ecd = (0.7f + 1.2f * (rand() / (float)RAND_MAX)) * (diff == 1 ? 0.44f : 1.f);
+            ecd = (0.7f + 1.2f * (rand() / (float)RAND_MAX)) * (diff >= 1 ? 0.44f : 1.f);
         }
     }
 
-    if (ehp <= 0) ko(1);
-    else if (php <= 0) ko(0);
+    if (ehp <= 0) end_round(1, 1);
+    else if (php <= 0) end_round(2, 1);
     else { rtime -= dt; if (rtime <= 0) time_up(); }
 }
 
@@ -420,18 +419,20 @@ static void draw_game(void) {
         text(buf, CX, CY, 2.2f, 1, .9f, .2f, 1);
     } else if (state == S_BREAK) {
         rect(0, 0, (float)W, (float)H, 0, 0, 0, 0.5f);
-        text(lastres == 1 ? "RAUND GALABA" : (lastres == 2 ? "RAUND MAGLUBIYAT" : "RAUND DURANG"),
-             CX, CY - 8 * U, 1.5f, 1, 1, 1, 1);
+        const char *t1 = isko ? (lastres == 1 ? "NOKAUT! RAUND GALABA" : "NOKAUT. RAUND MAGLUBIYAT")
+                              : (lastres == 1 ? "RAUND GALABA" : (lastres == 2 ? "RAUND MAGLUBIYAT" : "RAUND DURANG"));
+        text(t1, CX, CY - 8 * U, 1.1f, 1, 1, 1, 1);
         snprintf(buf, sizeof(buf), "SCHET %d:%d", pw, ew);
         text(buf, CX, CY + 10 * U, 1.1f, 1, .9f, .2f, 1);
+        if (stimer > 1) text("KEYINGI RAUND: EKRANGA TEGING", CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
     } else if (state == S_END) {
         if (finalres == 1) rect(0, 0, (float)W, (float)H, 0, .6f, .2f, 0.55f);
         else if (finalres == 2) rect(0, 0, (float)W, (float)H, .7f, 0, 0, 0.55f);
         else rect(0, 0, (float)W, (float)H, .3f, .3f, .35f, 0.55f);
-        const char *s = finalres == 1 ? (isko ? "NOKAUT! GALABA" : "GALABA!")
-                      : (finalres == 2 ? (isko ? "NOKAUT. MAGLUBIYAT" : "MAGLUBIYAT") : "DURANG");
+        const char *s = finalres == 1 ? "GALABA!" : (finalres == 2 ? "MAGLUBIYAT" : "DURANG");
         text(s, CX, CY - 8 * U, 1.5f, 1, 1, 1, 1);
-        if (!isko) { snprintf(buf, sizeof(buf), "RAUNDLAR %d:%d", pw, ew); text(buf, CX, CY + 8 * U, 1.0f, 1, .9f, .2f, 1); }
+        snprintf(buf, sizeof(buf), "RAUNDLAR %d:%d", pw, ew);
+        text(buf, CX, CY + 8 * U, 1.0f, 1, .9f, .2f, 1);
         if (stimer > 1) text("MENYUGA QAYTISH: EKRANGA TEGING", CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
     }
 }
@@ -441,7 +442,7 @@ static const char *DIFF_NAME[3] = { "1 ODDIY", "2 TEZ", "3 HIMOYA" };
 static const char *DIFF_DESC[3] = {
     "ODDIY: HOZIRGI HOLAT",
     "TEZ: DUSHMAN 2 BARAVAR KOP HUJUM QILADI",
-    "HIMOYA: HUJUM QILMAGAN PAYT DOIM BLOK"
+    "HIMOYA: TEZ HUJUM VA DOIM BLOK"
 };
 static int in(float x, float y, float cx, float cy, float w, float h) {
     return fabsf(x - cx) < w / 2 && fabsf(y - cy) < h / 2;
@@ -508,6 +509,7 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
         float x = AMotionEvent_getX(e, idx), y = AMotionEvent_getY(e, idx);
         if (state == S_MENU) { menu_tap(x, y); return 1; }
         if (state == S_END) { if (stimer > 1) { state = S_MENU; release_joys(); layout(); } return 1; }
+        if (state == S_BREAK) { if (stimer > 1) { rnd++; start_round(); } return 1; }
         if (state != S_FIGHT) return 1;
         int id = AMotionEvent_getPointerId(e, idx);
         for (int i = 0; i < 3; i++) {
