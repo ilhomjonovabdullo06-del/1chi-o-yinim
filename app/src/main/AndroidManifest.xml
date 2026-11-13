@@ -3,6 +3,7 @@
     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
     <application
         android:label="Boks"
+        android:icon="@mipmap/ic_launcher"
         android:hasCode="false">
         <activity
             android:name="android.app.NativeActivity"

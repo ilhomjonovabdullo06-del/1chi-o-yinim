@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 project(boks C)
 
 set(GLUE ${ANDROID_NDK}/sources/android/native_app_glue)
@@ -8,4 +8,6 @@ target_include_directories(native_app_glue PUBLIC ${GLUE})
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -u ANativeActivity_onCreate")
 
 add_library(boks SHARED main.c)
-target_link_libraries(boks native_app_glue android EGL GLESv2 log m)
+# Google Play: 16 KB sahifa o'lchamini qo'llab-quvvatlash
+target_link_options(boks PRIVATE -Wl,-z,max-page-size=16384)
+target_link_libraries(boks native_app_glue android EGL GLESv2 OpenSLES log m)
