@@ -2,6 +2,7 @@
 // Menyu, 3 raund x 1.5 daqiqa, qo'ng'iroq, 2 xil joystik joylashuvi, 3 xil qiyinlik.
 
 #include <android_native_app_glue.h>
+#include "game.h"
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <SLES/OpenSLES.h>
@@ -16,13 +17,9 @@
 #define PI 3.14159265f
 #define SEG 28
 #define ROUND_SEC 90.f
-#define PUNCH_T 0.28f
-#define EPT (diff >= 1 ? 0.14f : 0.22f)   // dushman zarbasi davomiyligi
 
 typedef struct { float cx, cy, r, vx, vy; int pid; } Joy;
-typedef struct { float t, dx, dy; int hit, was; } Arm;
-typedef struct { float bx, by, fx, fy, qx, qy, hx, hy; } Pose;
-enum { S_MENU, S_INTRO, S_FIGHT, S_BREAK, S_END };
+enum { S_MENU, S_INTRO, S_FIGHT, S_BREAK, S_END, S_HELP };
 
 static EGLDisplay dpy = EGL_NO_DISPLAY;
 static EGLSurface surf = EGL_NO_SURFACE;
@@ -33,14 +30,13 @@ static int W, H, started = 0;
 static float U, CX, CY, RING;
 
 static Joy mv, jl, jr;
-static Arm al, ar;
-static float px, py, lx, ly, tw, php;
-static float ex, ey, ehp, ecd, etimer, eblock, eflash, pflash, now_t;
-static int estate, ehand, ehit, guard;
+static Game g;
+static int flip = 0;   // PvP mehmon uchun tasvirni 180 gradus aylantirish (keyingi qismlarda)
 
 static int state = S_MENU, lay = 0, diff = 0;
 static int rnd = 1, pw = 0, ew = 0, lastres = 3, finalres = 3, isko = 0;
 static float stimer, rtime;
+static int help_page = 0;
 
 /* ---------- OVOZ (OpenSL ES, qo'ng'iroq sintezi) ---------- */
 #define SR 22050
@@ -127,8 +123,8 @@ static void line(float x1, float y1, float x2, float y2, float th, float r, floa
 }
 
 /* ---------- 5x7 shrift ---------- */
-static const char CH[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-/!. ";
-static const unsigned char FONT[42][7] = {
+static const char CH[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-/!.' ";
+static const unsigned char FONT[43][7] = {
     {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11},{0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},
     {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E},{0x1E,0x11,0x11,0x11,0x11,0x11,0x1E},
     {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F},{0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},
@@ -149,7 +145,7 @@ static const unsigned char FONT[42][7] = {
     {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E},{0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
     {0x00,0x04,0x00,0x00,0x00,0x04,0x00},{0x00,0x00,0x00,0x1F,0x00,0x00,0x00},
     {0x01,0x01,0x02,0x04,0x08,0x10,0x10},{0x04,0x04,0x04,0x04,0x04,0x00,0x04},
-    {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C},{0x00,0x00,0x00,0x00,0x00,0x00,0x00}
+    {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C},{0x06,0x04,0x08,0x00,0x00,0x00,0x00},{0x00,0x00,0x00,0x00,0x00,0x00,0x00}
 };
 #define TMAX 48
 static float tbuf[TMAX * 35 * 12];
@@ -180,14 +176,22 @@ static void text(const char *s, float cx, float cy, float sc, float r, float g, 
 }
 
 /* ---------- o'yin holati ---------- */
+static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
+static float SXW(float x) { return CX + (flip ? -x : x) * U; }
+static float SYW(float y) { return CY + (flip ? -y : y) * U; }
+
 static void layout(void) {
-    U = H / 100.f; CX = W / 2.f; CY = H / 2.f; RING = 40 * U;
+    U = H / 100.f; CX = W / 2.f; CY = H / 2.f; RING = RING_HALF * U;
     if (lay == 0) {          // 1: yurish past-chap, qo'llar yuqori burchaklar
         mv.cx = 20 * U;     mv.cy = 76 * U; mv.r = 13 * U;
         jl.cx = 15 * U;     jl.cy = 18 * U; jl.r = 12 * U;
         jr.cx = W - 15 * U; jr.cy = 18 * U; jr.r = 12 * U;
-    } else {                 // 2: qo'llar past burchaklar, yurish yuqori-chap
+    } else if (lay == 1) {   // 2: qo'llar past burchaklar, yurish yuqori-chap
         mv.cx = 20 * U;     mv.cy = 24 * U; mv.r = 13 * U;
+        jl.cx = 15 * U;     jl.cy = 82 * U; jl.r = 12 * U;
+        jr.cx = W - 15 * U; jr.cy = 82 * U; jr.r = 12 * U;
+    } else {                 // 3: faqat 2 joystik (yurish yo'q, qo'llar past burchaklarda)
+        mv.cx = -1000;      mv.cy = -1000;  mv.r = 0;
         jl.cx = 15 * U;     jl.cy = 82 * U; jl.r = 12 * U;
         jr.cx = W - 15 * U; jr.cy = 82 * U; jr.r = 12 * U;
     }
@@ -196,77 +200,19 @@ static void release_joys(void) {
     mv.pid = jl.pid = jr.pid = -1;
     mv.vx = mv.vy = jl.vx = jl.vy = jr.vx = jr.vy = 0;
 }
-static void reset(void) {
-    px = CX; py = CY + 22 * U; ex = CX; ey = CY - 22 * U;
-    lx = ly = tw = 0; php = ehp = 100; ecd = 1.5f; etimer = 0; eblock = 0;
-    eflash = pflash = 0; estate = 0; ehit = 0; guard = 0;
-    al.t = ar.t = -1; al.was = ar.was = 0;
+static void joy_set(Joy *j, float x, float y) {
+    float dx = (x - j->cx) / j->r, dy = (y - j->cy) / j->r, m = hypotf(dx, dy);
+    if (m > 1) { dx /= m; dy /= m; }
+    j->vx = dx; j->vy = dy;
 }
 static void start_round(void) {
-    layout(); reset(); release_joys();
+    layout(); game_reset(&g); release_joys();
     rtime = ROUND_SEC; state = S_INTRO; stimer = 2.0f;
 }
 static void start_match(void) {
     pw = ew = 0; rnd = 1; isko = 0;
     start_round();
 }
-static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
-static int eblocking(void) { return eblock > 0 || (diff == 2 && estate == 0); }
-
-static Pose player_pose(void) {
-    Pose p;
-    float a = atan2f(ey - py, ex - px);
-    p.fx = cosf(a); p.fy = sinf(a);
-    p.bx = px + lx * 4 * U; p.by = py + ly * 4 * U;
-    float sa = a + tw;
-    p.qx = -sinf(sa); p.qy = cosf(sa);
-    p.hx = p.bx + lx * 2 * U + p.fx * 1.5f * U;
-    p.hy = p.by + ly * 2 * U + p.fy * 1.5f * U;
-    return p;
-}
-static void player_fist(const Pose *p, int right, const Arm *a, float *x, float *y) {
-    float s = right ? 1.f : -1.f;
-    float shx = p->bx + p->qx * 5 * U * s, shy = p->by + p->qy * 5 * U * s;
-    if (guard) {
-        *x = p->hx + p->fx * 4 * U + p->qx * 2.6f * U * s;
-        *y = p->hy + p->fy * 4 * U + p->qy * 2.6f * U * s;
-        return;
-    }
-    *x = shx + p->fx * 6 * U; *y = shy + p->fy * 6 * U;
-    if (a->t >= 0) {
-        float ext = sinf(PI * clampf(a->t / PUNCH_T, 0, 1));
-        *x += a->dx * 16 * U * ext; *y += a->dy * 16 * U * ext;
-    }
-}
-static void joy_set(Joy *j, float x, float y) {
-    float dx = (x - j->cx) / j->r, dy = (y - j->cy) / j->r, m = hypotf(dx, dy);
-    if (m > 1) { dx /= m; dy /= m; }
-    j->vx = dx; j->vy = dy;
-}
-
-static void arm_update(Arm *a, Joy *j, int right, float dt) {
-    float m = hypotf(j->vx, j->vy);
-    if (a->t >= 0) {
-        a->t += dt;
-        Pose p = player_pose();
-        float fx, fy;
-        player_fist(&p, right, a, &fx, &fy);
-        float ext = sinf(PI * clampf(a->t / PUNCH_T, 0, 1));
-        if (!a->hit && ext > 0.8f && hypotf(fx - ex, fy - ey) < 8.5f * U) {
-            a->hit = 1;
-            ehp -= eblocking() ? 1.f : 7.f;
-            eflash = 0.15f;
-            float d = hypotf(ex - px, ey - py) + 0.001f;
-            ex += (ex - px) / d * 2 * U; ey += (ey - py) / d * 2 * U;
-        }
-        if (a->t >= PUNCH_T) a->t = -1;
-    } else if (!guard && m > 0.7f && !a->was) {
-        a->t = 0; a->hit = 0; a->dx = j->vx / m; a->dy = j->vy / m;
-        if (eblock <= 0 && (rand() % 100) < 30) eblock = 0.5f;
-    }
-    a->was = m > 0.5f;
-}
-
 static void end_round(int res, int byko) {
     lastres = res; isko = byko;
     if (res == 1) pw++; else if (res == 2) ew++;
@@ -279,91 +225,66 @@ static void end_round(int res, int byko) {
     }
 }
 static void time_up(void) {
-    end_round(php > ehp + 0.5f ? 1 : (ehp > php + 0.5f ? 2 : 3), 0);
+    float a = g.f[0].hp, b = g.f[1].hp;
+    end_round(a > b + 0.5f ? 1 : (b > a + 0.5f ? 2 : 3), 0);
 }
 
 static void update(float dt) {
-    now_t += dt;
     if (state == S_INTRO) { stimer -= dt; if (stimer <= 0) { state = S_FIGHT; bell(1); } return; }
     if (state == S_BREAK) { stimer += dt; return; }
     if (state == S_END) { stimer += dt; return; }
     if (state != S_FIGHT) return;
 
-    px += mv.vx * 30 * U * dt; py += mv.vy * 30 * U * dt;
+    Input in[2];
+    memset(in, 0, sizeof(in));
+    float sg = flip ? -1.f : 1.f;
+    in[0].mvx = mv.vx * sg; in[0].mvy = mv.vy * sg;
+    // qo'l joystigi avatarga bog'langan: ekrandagi "yuqori" = raqib tomoni
+    in[0].arm[0][0] = jl.vx; in[0].arm[0][1] = -jl.vy;
+    in[0].arm[1][0] = jr.vx; in[0].arm[1][1] = -jr.vy;
+    if (lay == 2) game_two_stick(&g, 0, dt, &in[0]);   // yurish qo'l joystiklaridan chiqariladi
+    ai_input(&g, dt, diff, &in[1]);
+    game_step(&g, dt, in);
 
-    float lm = hypotf(jl.vx, jl.vy), rm = hypotf(jr.vx, jr.vy);
-    guard = (lm > 0.25f && rm > 0.25f);
-    float k = clampf(12 * dt, 0, 1);
-    float tlx = 0, tly = 0, ttw = 0;
-    if (guard) {
-        tlx = (jl.vx + jr.vx) / 2; tly = (jl.vy + jr.vy) / 2;
-        ttw = (jr.vy - jl.vy) * 0.6f;
-    }
-    lx += (tlx - lx) * k; ly += (tly - ly) * k; tw += (ttw - tw) * k;
-
-    float dx = px - ex, dy = py - ey, d = hypotf(dx, dy) + 0.001f, mind = 12 * U;
-    if (d < mind) {
-        float push = (mind - d) / 2;
-        px += dx / d * push; py += dy / d * push; ex -= dx / d * push; ey -= dy / d * push;
-    }
-    float lim = RING - 6 * U;
-    px = clampf(px, CX - lim, CX + lim); py = clampf(py, CY - lim, CY + lim);
-    ex = clampf(ex, CX - lim, CX + lim); ey = clampf(ey, CY - lim, CY + lim);
-
-    arm_update(&al, &jl, 0, dt);
-    arm_update(&ar, &jr, 1, dt);
-
-    eblock -= dt; eflash -= dt; pflash -= dt; ecd -= dt;
-    dx = px - ex; dy = py - ey; d = hypotf(dx, dy) + 0.001f;
-    float nx = dx / d, ny = dy / d;
-    if (estate == 0) {
-        float sp = 0;
-        if (d > 26 * U) sp = 16 * U; else if (d < 20 * U) sp = -12 * U;
-        float st = sinf(now_t * 1.3f) * 8 * U;
-        ex += (nx * sp - ny * st) * dt; ey += (ny * sp + nx * st) * dt;
-        if (ecd <= 0 && d < 28 * U) { estate = 1; etimer = (diff >= 1) ? 0.22f : 0.35f; ehand = rand() & 1; }
-    } else if (estate == 1) {
-        etimer -= dt;
-        if (etimer <= 0) { estate = 2; etimer = EPT; ehit = 0; }
-    } else {
-        etimer -= dt;
-        float ext = sinf(PI * clampf(1 - etimer / EPT, 0, 1));
-        if (!ehit && ext > 0.8f) {
-            ehit = 1;
-            if (d < 26 * U) {
-                float dmg = 8;
-                if (guard) dmg = (hypotf(lx, ly) > 0.6f) ? 0 : 1.2f;
-                if (dmg > 0) pflash = 0.15f;
-                php -= dmg;
-            }
-        }
-        if (etimer <= 0) {
-            estate = 0;
-            ecd = (0.7f + 1.2f * (rand() / (float)RAND_MAX)) * (diff >= 1 ? 0.44f : 1.f);
-        }
-    }
-
-    if (ehp <= 0) end_round(1, 1);
-    else if (php <= 0) end_round(2, 1);
+    if (g.f[1].hp <= 0) end_round(1, 1);
+    else if (g.f[0].hp <= 0) end_round(2, 1);
     else { rtime -= dt; if (rtime <= 0) time_up(); }
 }
 
 /* ---------- chizish ---------- */
-static void draw_fighter(float bx, float by, float qx, float qy, float hx, float hy,
-                         float fist[2][2], float cr, float cg, float cb, float flash) {
-    float k = flash > 0 ? 0.6f : 0;
-    line(bx - qx * 5 * U, by - qy * 5 * U, bx + qx * 5 * U, by + qy * 5 * U, 4 * U, cr * .7f + k, cg * .7f + k, cb * .7f + k, 1);
+static void draw_fighter(const Fighter *f, float cr, float cg, float cb) {
+    float k = f->flash > 0 ? 0.6f : 0;
+    float bx = SXW(f->x), by = SYW(f->y);
+    line(SXW(f->sx[0]), SYW(f->sy[0]), SXW(f->sx[1]), SYW(f->sy[1]), 4 * U, cr * .7f + k, cg * .7f + k, cb * .7f + k, 1);
     circle(bx, by, 5.5f * U, cr + k, cg + k, cb + k, 1);
+    for (int i = 0; i < 2; i++)
+        line(SXW(f->sx[i]), SYW(f->sy[i]), SXW(f->gx[i]), SYW(f->gy[i]), 1.6f * U, cr * .6f, cg * .6f, cb * .6f, 1);
+    circle(SXW(f->x + f->fx * 1.5f), SYW(f->y + f->fy * 1.5f), 3.2f * U, cr * .8f + k, cg * .8f + k, cb * .8f + k, 1);
     for (int i = 0; i < 2; i++) {
-        float s = i ? 1.f : -1.f;
-        line(bx + qx * 5 * U * s, by + qy * 5 * U * s, fist[i][0], fist[i][1], 1.6f * U, cr * .6f, cg * .6f, cb * .6f, 1);
+        if (f->guard[i] > 0.25f) circle(SXW(f->gx[i]), SYW(f->gy[i]), (1.f + 5.f * f->guard[i]) * U, .3f, .7f, 1, 0.25f);
+        circle(SXW(f->gx[i]), SYW(f->gy[i]), 2.6f * U, .9f, .1f, .1f, 1);
     }
-    circle(hx, hy, 3.2f * U, cr * .8f + k, cg * .8f + k, cb * .8f + k, 1);
-    for (int i = 0; i < 2; i++) circle(fist[i][0], fist[i][1], 2.6f * U, .9f, .1f, .1f, 1);
+}
+static void half_disc(float cx, float cy, float r, int lower, float R, float G, float B, float A) {
+    float v[(SEG + 2) * 2];
+    v[0] = cx; v[1] = cy;
+    for (int i = 0; i <= SEG; i++) {
+        float t = PI * i / SEG + (lower ? 0.f : PI);
+        v[2 + i * 2] = cx + cosf(t) * r;
+        v[3 + i * 2] = cy + sinf(t) * r;
+    }
+    tri(v, SEG + 2, GL_TRIANGLE_FAN, R, G, B, A);
 }
 static void draw_joy(const Joy *j) {
     circle(j->cx, j->cy, j->r, 1, 1, 1, 0.15f);
     circle(j->cx + j->vx * j->r, j->cy + j->vy * j->r, j->r * 0.45f, 1, 1, 1, j->pid >= 0 ? 0.7f : 0.35f);
+}
+// qo'l joystigi: yuqori yarmi (qizil) - zarba, pastki yarmi (ko'k) - himoya
+static void draw_joy_arm(const Joy *j) {
+    half_disc(j->cx, j->cy, j->r, 0, 1.f, .3f, .3f, 0.22f);
+    half_disc(j->cx, j->cy, j->r, 1, .3f, .5f, 1.f, 0.28f);
+    line(j->cx - j->r, j->cy, j->cx + j->r, j->cy, 0.4f * U, 1, 1, 1, 0.5f);
+    circle(j->cx + j->vx * j->r, j->cy + j->vy * j->r, j->r * 0.45f, 1, 1, 1, j->pid >= 0 ? 0.75f : 0.4f);
 }
 
 static void draw_game(void) {
@@ -374,37 +295,15 @@ static void draw_game(void) {
     rect(CX - RING, CY - RING, t, 2 * RING, .8f, .1f, .1f, 1);
     rect(CX + RING - t, CY - RING, t, 2 * RING, .8f, .1f, .1f, 1);
 
-    {   // dushman
-        float dx = px - ex, dy = py - ey, d = hypotf(dx, dy) + 0.001f;
-        float nx = dx / d, ny = dy / d, qx = -ny, qy = nx;
-        float fist[2][2];
-        float ext = sinf(PI * clampf(1 - etimer / EPT, 0, 1));
-        for (int h = 0; h < 2; h++) {
-            float s = h ? 1.f : -1.f;
-            float sx = ex + qx * 5 * U * s, sy = ey + qy * 5 * U * s;
-            float fx = sx + nx * 6 * U, fy = sy + ny * 6 * U;
-            if (eblocking()) { fx = ex + nx * 8 * U + qx * 2.6f * U * s; fy = ey + ny * 8 * U + qy * 2.6f * U * s; }
-            else if (estate == 1 && h == ehand) { fx = sx + nx * U; fy = sy + ny * U; }
-            else if (estate == 2 && h == ehand) { fx = sx + nx * (6 + 14 * ext) * U; fy = sy + ny * (6 + 14 * ext) * U; }
-            fist[h][0] = fx; fist[h][1] = fy;
-        }
-        draw_fighter(ex, ey, qx, qy, ex + nx * 1.5f * U, ey + ny * 1.5f * U, fist, .85f, .4f, .2f, eflash);
-        if (estate == 1) circle(ex, ey, 8 * U, 1, .2f, .2f, 0.25f);
-    }
-    {   // o'yinchi
-        Pose p = player_pose();
-        float fist[2][2];
-        player_fist(&p, 0, &al, &fist[0][0], &fist[0][1]);
-        player_fist(&p, 1, &ar, &fist[1][0], &fist[1][1]);
-        draw_fighter(p.bx, p.by, p.qx, p.qy, p.hx, p.hy, fist, .2f, .5f, 1.f, pflash);
-        if (guard) circle(p.bx, p.by, 9 * U, .3f, .7f, 1, 0.2f);
-    }
+    draw_fighter(&g.f[1], .85f, .4f, .2f);
+    if (g.ai.state == 1) circle(SXW(g.f[1].x), SYW(g.f[1].y), 8 * U, 1, .2f, .2f, 0.25f);   // hujum ogohlantirishi
+    draw_fighter(&g.f[0], .2f, .5f, 1.f);
 
     // HUD: HP, vaqt, raund
     rect(CX - 48 * U, 3 * U, 36 * U, 3 * U, .2f, .2f, .2f, 1);
-    rect(CX - 48 * U, 3 * U, 36 * U * clampf(php / 100, 0, 1), 3 * U, .2f, .6f, 1, 1);
+    rect(CX - 48 * U, 3 * U, 36 * U * clampf(g.f[0].hp / 100, 0, 1), 3 * U, .2f, .6f, 1, 1);
     rect(CX + 12 * U, 3 * U, 36 * U, 3 * U, .2f, .2f, .2f, 1);
-    rect(CX + 12 * U, 3 * U, 36 * U * clampf(ehp / 100, 0, 1), 3 * U, .9f, .4f, .2f, 1);
+    rect(CX + 12 * U, 3 * U, 36 * U * clampf(g.f[1].hp / 100, 0, 1), 3 * U, .9f, .4f, .2f, 1);
     char buf[48];
     int secs = (int)ceilf(rtime);
     snprintf(buf, sizeof(buf), "%d:%02d", secs / 60, secs % 60);
@@ -412,16 +311,17 @@ static void draw_game(void) {
     snprintf(buf, sizeof(buf), "RAUND %d/3", rnd);
     text(buf, CX, 12 * U, .5f, .85f, .85f, .85f, .9f);
 
-    draw_joy(&mv); draw_joy(&jl); draw_joy(&jr);
+    if (lay != 2) draw_joy(&mv);
+    draw_joy_arm(&jl); draw_joy_arm(&jr);
 
     if (state == S_INTRO) {
         snprintf(buf, sizeof(buf), "RAUND %d", rnd);
         text(buf, CX, CY, 2.2f, 1, .9f, .2f, 1);
     } else if (state == S_BREAK) {
         rect(0, 0, (float)W, (float)H, 0, 0, 0, 0.5f);
-        const char *t1 = isko ? (lastres == 1 ? "NOKAUT! RAUND GALABA" : "NOKAUT. RAUND MAGLUBIYAT")
-                              : (lastres == 1 ? "RAUND GALABA" : (lastres == 2 ? "RAUND MAGLUBIYAT" : "RAUND DURANG"));
-        text(t1, CX, CY - 8 * U, 1.1f, 1, 1, 1, 1);
+        const char *t1 = isko ? (lastres == 1 ? "NOKAUT! RAUND G'ALABA" : "NOKAUT. RAUND MAG'LUBIYAT")
+                              : (lastres == 1 ? "RAUND G'ALABA" : (lastres == 2 ? "RAUND MAG'LUBIYAT" : "RAUND DURANG"));
+        text(t1, CX, CY - 8 * U, 1.0f, 1, 1, 1, 1);
         snprintf(buf, sizeof(buf), "SCHET %d:%d", pw, ew);
         text(buf, CX, CY + 10 * U, 1.1f, 1, .9f, .2f, 1);
         if (stimer > 1) text("KEYINGI RAUND: EKRANGA TEGING", CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
@@ -429,7 +329,7 @@ static void draw_game(void) {
         if (finalres == 1) rect(0, 0, (float)W, (float)H, 0, .6f, .2f, 0.55f);
         else if (finalres == 2) rect(0, 0, (float)W, (float)H, .7f, 0, 0, 0.55f);
         else rect(0, 0, (float)W, (float)H, .3f, .3f, .35f, 0.55f);
-        const char *s = finalres == 1 ? "GALABA!" : (finalres == 2 ? "MAGLUBIYAT" : "DURANG");
+        const char *s = finalres == 1 ? "G'ALABA!" : (finalres == 2 ? "MAG'LUBIYAT" : "DURANG");
         text(s, CX, CY - 8 * U, 1.5f, 1, 1, 1, 1);
         snprintf(buf, sizeof(buf), "RAUNDLAR %d:%d", pw, ew);
         text(buf, CX, CY + 8 * U, 1.0f, 1, .9f, .2f, 1);
@@ -441,45 +341,88 @@ static void draw_game(void) {
 static const char *DIFF_NAME[3] = { "1 ODDIY", "2 TEZ", "3 HIMOYA" };
 static const char *DIFF_DESC[3] = {
     "ODDIY: HOZIRGI HOLAT",
-    "TEZ: DUSHMAN 2 BARAVAR KOP HUJUM QILADI",
+    "TEZ: DUSHMAN 2 BARAVAR KO'P HUJUM QILADI",
     "HIMOYA: TEZ HUJUM VA DOIM BLOK"
 };
 static int in(float x, float y, float cx, float cy, float w, float h) {
     return fabsf(x - cx) < w / 2 && fabsf(y - cy) < h / 2;
 }
+static const char *HELP_TITLE[3] = { "QANDAY O'YNALADI", "3 JOYSTIK BOSHQARUVI", "2 JOYSTIK BOSHQARUVI" };
+static const char *HELP_LINES[3][9] = {
+    { "MAQSAD: RAQIBNI NOKAUT QILISH YOKI",
+      "HAR RAUNDDA RAQIBDAN KO'P HP QOLDIRING.",
+      "O'YIN 3 RAUND. HAR BIRI 1:30 DAQIQA.",
+      "2 RAUNDNI YUTGAN G'ALABA QOZONADI.",
+      "HP 0 BO'LSA RAUND NOKAUT BILAN TUGAYDI.",
+      "RAUND BOSHI VA OXIRIDA QO'NG'IROQ CHALINADI.",
+      "RAUNDLAR ORASIDA EKRANGA TEGIB DAVOM ETING.", NULL },
+    { "CHAP-PAST: YURISH. YUQORI BURCHAKLAR: QO'LLAR.",
+      "QO'L JOYSTIGI RAQIB TOMONGA BOG'LANGAN:",
+      "YUQORI YARMI QIZIL: ZARBA TOMONI.",
+      "PASTKI YARMI KO'K: HIMOYA TOMONI.",
+      "TEZ SURSANGIZ ZARBA KUCHLI BO'LADI.",
+      "SEKIN BOSSANGIZ ZARBA BO'LMAYDI.",
+      "HIMOYA QO'LI FAQAT O'Z TOMONINI YOPADI.", NULL },
+    { "IKKALA JOYSTIK BIR TOMONGA SURILSA YURASIZ.",
+      "OLDINGA: RAQIB TOMON. ORQAGA: UZOQLASHISH.",
+      "YONGA: RAQIB ATROFIDA AYLANISH.",
+      "YURGANDA QO'LLAR HIMOYA HOLATIDA BO'LADI.",
+      "YENGIL ORQAGA YOKI ICHKARIGA SURSANGIZ -",
+      "JOYIDA HIMOYA QILASIZ.",
+      "1-2 KOMBO: QO'LLARNI NAVBAT BILAN URING.",
+      "ORQAGA TUGMASI: MENYUGA QAYTISH." }
+};
+static void draw_help(void) {
+    text(HELP_TITLE[help_page], CX, 11 * U, 1.0f, 1, .85f, .2f, 1);
+    for (int i = 0; i < 9 && HELP_LINES[help_page][i]; i++)
+        text(HELP_LINES[help_page][i], CX, (26 + i * 8) * U, .55f, 1, 1, 1, 1);
+    char b[16];
+    snprintf(b, sizeof(b), "%d/3", help_page + 1);
+    text(b, W - 14 * U, 94 * U, .7f, .8f, .8f, .8f, 1);
+    text(help_page < 2 ? "EKRANGA TEGING: KEYINGI SAHIFA" : "EKRANGA TEGING: MENYU", CX, 94 * U, .55f, .8f, .8f, .8f, 1);
+}
+
 static void draw_menu(void) {
+    rect(W - 40 * U, 4 * U, 36 * U, 9 * U, .2f, .22f, .3f, 1);
+    text("YORIQNOMA", W - 22 * U, 8.5f * U, .55f, 1, 1, 1, 1);
     text("BOKS", CX, 12 * U, 2.2f, 1, .25f, .2f, 1);
     rect(CX - 30 * U, 22 * U, 60 * U, 0.8f * U, .9f, .2f, .2f, 1);
     text("JOYSTIK JOYLASHUVI", CX, 27 * U, .6f, .8f, .8f, .8f, 1);
-    for (int i = 0; i < 2; i++) {
-        float cx = CX + (i ? 22 : -22) * U, cy = 39 * U;
-        if (lay == i) rect(cx - 21 * U, cy - 10 * U, 42 * U, 20 * U, 1, .8f, .1f, 1);
-        rect(cx - 20 * U, cy - 9 * U, 40 * U, 18 * U, .2f, .22f, .3f, 1);
-        float mx, my, lxx, lyy, rxx, ryy;
-        if (i == 0) { mx = -15; my = 4; lxx = -15; lyy = -4; rxx = 15; ryy = -4; }
-        else        { mx = -15; my = -4; lxx = -15; lyy = 4; rxx = 15; ryy = 4; }
-        circle(cx + mx * U, cy + my * U, 2.6f * U, .3f, .6f, 1, 1);
+    static const char *LAY_NAME[3] = { "3J-1", "3J-2", "2J" };
+    static const char *LAY_HINT[3] = { "3 JOYSTIK: YURISH CHAP-PASTDA", "3 JOYSTIK: YURISH YUQORI-CHAPDA",
+                                       "2 JOYSTIK: IKKALASI BIR TOMONGA - YURISH" };
+    for (int i = 0; i < 3; i++) {
+        float cx = CX + (i - 1) * 38 * U, cy = 39 * U;
+        if (lay == i) rect(cx - 18.5f * U, cy - 10 * U, 37 * U, 20 * U, 1, .8f, .1f, 1);
+        rect(cx - 17.5f * U, cy - 9 * U, 35 * U, 18 * U, .2f, .22f, .3f, 1);
+        float mx = 0, my = 0, lxx, lyy, rxx, ryy;
+        int has_mv = 1;
+        if (i == 0)      { mx = -12; my = 4;  lxx = -12; lyy = -4; rxx = 12; ryy = -4; }
+        else if (i == 1) { mx = -12; my = -4; lxx = -12; lyy = 4;  rxx = 12; ryy = 4; }
+        else             { has_mv = 0; lxx = -12; lyy = 4; rxx = 12; ryy = 4; }
+        if (has_mv) circle(cx + mx * U, cy + my * U, 2.6f * U, .3f, .6f, 1, 1);
         circle(cx + lxx * U, cy + lyy * U, 2.6f * U, .9f, .2f, .2f, 1);
         circle(cx + rxx * U, cy + ryy * U, 2.6f * U, .9f, .2f, .2f, 1);
-        char n[2] = { (char)('1' + i), 0 };
-        text(n, cx, cy, .8f, .8f, .8f, .8f, .7f);
+        text(LAY_NAME[i], cx, cy, .6f, .8f, .8f, .8f, .8f);
     }
-    text("QIYINLIK", CX, 55 * U, .6f, .8f, .8f, .8f, 1);
+    text(LAY_HINT[lay], CX, 51.2f * U, .5f, .7f, .7f, .7f, 1);
+    text("QIYINLIK", CX, 56.5f * U, .6f, .8f, .8f, .8f, 1);
     for (int i = 0; i < 3; i++) {
-        float cx = CX + (i - 1) * 34 * U, cy = 64 * U;
+        float cx = CX + (i - 1) * 34 * U, cy = 65 * U;
         if (diff == i) rect(cx - 17 * U, cy - 5.5f * U, 34 * U, 11 * U, 1, .8f, .1f, 1);
         rect(cx - 16 * U, cy - 4.5f * U, 32 * U, 9 * U, diff == i ? .3f : .2f, diff == i ? .32f : .22f, diff == i ? .4f : .3f, 1);
         text(DIFF_NAME[i], cx, cy, .55f, 1, 1, 1, 1);
     }
-    text(DIFF_DESC[diff], CX, 73.5f * U, .55f, .8f, .8f, .8f, 1);
+    text(DIFF_DESC[diff], CX, 74.5f * U, .55f, .8f, .8f, .8f, 1);
     rect(CX - 33 * U, 80 * U, 66 * U, 14 * U, .15f, .6f, .25f, 1);
     text("BOSHLASH", CX, 87 * U, 1.1f, 1, 1, 1, 1);
 }
 static void menu_tap(float x, float y) {
-    for (int i = 0; i < 2; i++)
-        if (in(x, y, CX + (i ? 22 : -22) * U, 39 * U, 40 * U, 18 * U)) { lay = i; return; }
     for (int i = 0; i < 3; i++)
-        if (in(x, y, CX + (i - 1) * 34 * U, 64 * U, 32 * U, 9 * U)) { diff = i; return; }
+        if (in(x, y, CX + (i - 1) * 38 * U, 39 * U, 36 * U, 18 * U)) { lay = i; return; }
+    for (int i = 0; i < 3; i++)
+        if (in(x, y, CX + (i - 1) * 34 * U, 65 * U, 32 * U, 9 * U)) { diff = i; return; }
+    if (in(x, y, W - 22 * U, 8.5f * U, 36 * U, 9 * U)) { state = S_HELP; help_page = 0; return; }
     if (in(x, y, CX, 87 * U, 66 * U, 14 * U)) start_match();
 }
 
@@ -487,7 +430,7 @@ static void draw(void) {
     glViewport(0, 0, W, H);
     glClearColor(.07f, .07f, .09f, 1); glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog); glUniform2f(locRes, (float)W, (float)H);
-    if (state == S_MENU) draw_menu(); else draw_game();
+    if (state == S_MENU) draw_menu(); else if (state == S_HELP) draw_help(); else draw_game();
 }
 
 /* ---------- kirish ---------- */
@@ -508,6 +451,7 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
     if (a == AMOTION_EVENT_ACTION_DOWN || a == AMOTION_EVENT_ACTION_POINTER_DOWN) {
         float x = AMotionEvent_getX(e, idx), y = AMotionEvent_getY(e, idx);
         if (state == S_MENU) { menu_tap(x, y); return 1; }
+        if (state == S_HELP) { if (++help_page >= 3) state = S_MENU; return 1; }
         if (state == S_END) { if (stimer > 1) { state = S_MENU; release_joys(); layout(); } return 1; }
         if (state == S_BREAK) { if (stimer > 1) { rnd++; start_round(); } return 1; }
         if (state != S_FIGHT) return 1;
@@ -569,7 +513,7 @@ static int gl_init(ANativeWindow *w) {
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     layout();
-    if (!started) { reset(); started = 1; }
+    if (!started) { game_reset(&g); started = 1; }
     return 0;
 }
 static void gl_term(void) {
