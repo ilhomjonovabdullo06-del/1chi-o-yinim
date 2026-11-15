@@ -131,6 +131,20 @@ int main(void){
  place(&g,0,22,0,-22); y0=g.f[0].y;
  for(int i=0;i<60;i++){ Input in[2]={z,z}; in[0].arm[0][1]=-1.f; in[0].arm[1][1]=-1.f; game_two_stick(&g,0,DT,&in[0]); game_step(&g,DT,in);}
  {float d=g.f[0].y-y0; printf("  1 s da %.1f birlik (kutilgan ~16, ring chegarasigacha)\n",d); CHECK(d>10&&d<19,"tezlik ~60%");}
+
+ printf("T18: regressiya: qo'lqop tanani 'sakrab o'tib' ketmaydi (masofa 12..26 da har zarba tegadi)\n");
+ {
+   float ds[] = {12,13,14,15,16,17,18,20,22,24,26}; int bad = 0;
+   for (int di = 0; di < 11; di++) {
+     Game gg; game_reset(&gg);
+     for (int k = 0; k < 2; k++) {
+       gg.f[0].x = 0; gg.f[0].y = ds[di]/2; gg.f[1].x = 0; gg.f[1].y = -ds[di]/2;
+       for (int i = 0; i < 40; i++) { Input in[2]={z,z}; if (i < 5) in[0].arm[k][1] = 1.f; game_step(&gg, DT, in); gg.f[1].x = 0; gg.f[1].y = -ds[di]/2; gg.f[0].x = 0; gg.f[0].y = ds[di]/2; }
+     }
+     if (gg.hits[0] < 2) { bad++; printf("  masofa %.0f: faqat %d/2 zarba tegdi\n", ds[di], gg.hits[0]); }
+   }
+   CHECK(bad == 0, "har masofada ikkala qo'lning zarbasi tegadi");
+ }
  printf("%s (%d xato)\n",fails?"XATO BOR":"HAMMASI O'TDI",fails);
  return fails;
 }

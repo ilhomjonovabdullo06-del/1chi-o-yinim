@@ -17,6 +17,14 @@
 
 static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 
+// Nuqta (px,py) dan kesma (ax,ay)-(bx,by) gacha eng qisqa masofa
+static float seg_dist(float ax, float ay, float bx, float by, float px, float py) {
+    float dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    float t = l2 > 1e-9f ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0.f;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return hypotf(px - (ax + dx * t), py - (ay + dy * t));
+}
+
 static void frame(Fighter *f, const Fighter *o) {
     float a = atan2f(o->y - f->y, o->x - f->x);
     f->face = a;
@@ -50,8 +58,13 @@ void game_reset(Game *g) {
         frame(&g->f[i], &g->f[1 - i]);
         for (int k = 0; k < 2; k++) rel_vec(&g->f[i], k, &g->f[i].prel[k][0], &g->f[i].prel[k][1]);
         glove_world(&g->f[i]);
+        for (int k = 0; k < 2; k++) { g->f[i].pgx[k] = g->f[i].gx[k]; g->f[i].pgy[k] = g->f[i].gy[k]; }
     }
     g->ai.cd = 1.5f;
+}
+
+void game_refresh(Game *g) {
+    for (int i = 0; i < 2; i++) { frame(&g->f[i], &g->f[1 - i]); glove_world(&g->f[i]); }
 }
 
 // Joystik (yon, oldinga) -> qo'lqopning kerakli joyi (yelkaga nisbatan).
@@ -79,9 +92,9 @@ static void resolve_hits(Game *g, float dt) {
             for (int j = 0; j < 2; j++) {
                 if (D->guard[j] < 0.25f) continue;        // faqat himoya holatidagi qo'l bloklaydi
                 float rg = 1.f + 5.f * D->guard[j];
-                if (hypotf(A->gx[k] - D->gx[j], A->gy[k] - D->gy[j]) < rg + GLOVE_R) blocked = 1;
+                if (seg_dist(A->pgx[k], A->pgy[k], A->gx[k], A->gy[k], D->gx[j], D->gy[j]) < rg + GLOVE_R) blocked = 1;
             }
-            int body = hypotf(A->gx[k] - D->x, A->gy[k] - D->y) < BODY_R + GLOVE_R;
+            int body = seg_dist(A->pgx[k], A->pgy[k], A->gx[k], A->gy[k], D->x, D->y) < BODY_R + GLOVE_R;
             if (!blocked && !body) continue;
             if (blocked) {
                 D->hp -= 0.2f + 0.8f * s;
@@ -122,6 +135,7 @@ void game_step(Game *g, float dt, const Input in[2]) {
     // qo'llar
     for (int i = 0; i < 2; i++) {
         Fighter *f = &g->f[i], *o = &g->f[1 - i];
+        for (int k = 0; k < 2; k++) { f->pgx[k] = f->gx[k]; f->pgy[k] = f->gy[k]; }
         frame(f, o);
         for (int k = 0; k < 2; k++) {
             float tf, ts, gd;
@@ -143,7 +157,7 @@ void game_step(Game *g, float dt, const Input in[2]) {
             float vx = (rx - f->prel[k][0]) / (dt > 0 ? dt : 1e-3f);
             float vy = (ry - f->prel[k][1]) / (dt > 0 ? dt : 1e-3f);
             f->prel[k][0] = rx; f->prel[k][1] = ry;
-            float ux = o->x - f->gx[k], uy = o->y - f->gy[k], ul = hypotf(ux, uy) + 0.001f;
+            float ux = o->x - f->pgx[k], uy = o->y - f->pgy[k], ul = hypotf(ux, uy) + 0.001f;
             f->vt[k] = (vx * ux + vy * uy) / ul;
         }
     }

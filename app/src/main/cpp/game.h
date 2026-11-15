@@ -19,6 +19,7 @@ typedef struct {
     float hitcd[2];
     float sx[2], sy[2];         // yelka (dunyo)
     float gx[2], gy[2];         // qo'lqop (dunyo)
+    float pgx[2], pgy[2];       // oldingi kadrdagi qo'lqop (zarba yo'lini tekshirish uchun)
 } Fighter;
 
 typedef struct { int state, hand, seen, strikes; float timer, cd, block; } AI;
@@ -27,6 +28,8 @@ typedef struct { Fighter f[2]; AI ai; float t; int hits[2]; int blocks[2]; float
 
 void game_reset(Game *g);
 void game_step(Game *g, float dt, const Input in[2]);
+// Tarmoqdan kelgan holatdan hosilaviy qiymatlarni (yo'nalish, yelka, qo'lqop joyi) qayta hisoblaydi.
+void game_refresh(Game *g);
 // 1-jangchini (dushman) boshqaradigan sun'iy intellekt. diff: 0 oddiy, 1 tez, 2 himoya.
 void ai_input(Game *g, float dt, int diff, Input *out);
 int  ai_blocking(const Game *g, int diff);

@@ -3,6 +3,8 @@
 
 #include <android_native_app_glue.h>
 #include "game.h"
+#include "net.h"
+#include "sync.h"
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <SLES/OpenSLES.h>
@@ -19,7 +21,8 @@
 #define ROUND_SEC 90.f
 
 typedef struct { float cx, cy, r, vx, vy; int pid; } Joy;
-enum { S_MENU, S_INTRO, S_FIGHT, S_BREAK, S_END, S_HELP };
+enum { S_MENU, S_INTRO, S_FIGHT, S_BREAK, S_END, S_HELP,
+       S_ONLINE, S_HOSTING, S_SEARCH, S_IPENTRY, S_LOBBY };   // S_ONLINE va undan keyingilar: tarmoq ekranlari
 
 static EGLDisplay dpy = EGL_NO_DISPLAY;
 static EGLSurface surf = EGL_NO_SURFACE;
@@ -37,6 +40,30 @@ static int state = S_MENU, lay = 0, diff = 0;
 static int rnd = 1, pw = 0, ew = 0, lastres = 3, finalres = 3, isko = 0;
 static float stimer, rtime;
 static int help_page = 0;
+
+/* ---------- PvP (3-qism): xost o'yinni yuritadi, mehmon holatni oladi va chizadi ---------- */
+static int pvp = 0;                    // 0 yakka, 1 xost, 2 mehmon
+static int me = 0;                     // o'zimning jangchim: xost 0, mehmon 1
+static Game gt;                        // mehmon: xostdan kelgan oxirgi holat (yumshatish nishoni)
+static MatchInfo mi;                   // mehmon: xostdan kelgan o'yin ma'lumoti
+static Input rin;                      // xost: mehmondan kelgan oxirgi kirish
+static int r_two = 0;                  // mehmon 2 joystikli rejimdami
+static int ready_host = 0, ready_guest = 0, my_ready = 0, rdy_me = 0, rdy_opp = 0;
+static double t_rin = -10;
+static int bell_count = 0;             // sinov uchun: qo'ng'iroq chalish soni
+
+/* ---------- onlayn (2-qism): tarmoq holati ---------- */
+static Net net;
+static char my_name[NET_NAME_LEN + 1];
+static char ipbuf[20];                 // IP klaviaturasi matni
+static const char *online_msg = "";    // xato/ogohlantirish matni
+static uint32_t my_ips[NET_MAX_IPS];
+static int n_my_ips = 0;
+static double t_ips = -10, net_clock = 0;
+static float ui_t = 0;
+static void online_open(void);   // menu_tap chaqiradi, ta'rifi pastroqda
+static void host_begin(void);    // lobbidagi BOSHLASH, ta'rifi pastroqda
+static void draw_online(void);   // draw() chaqiradi, ta'rifi pastroqda
 
 /* ---------- OVOZ (OpenSL ES, qo'ng'iroq sintezi) ---------- */
 #define SR 22050
@@ -88,6 +115,7 @@ static void snd_init(void) {
     (*pl)->SetPlayState(pl, SL_PLAYSTATE_PLAYING);
 }
 static void bell(int n) {
+    bell_count++;
     if (!bq) return;
     (*bq)->Clear(bq);
     if (n == 1) (*bq)->Enqueue(bq, bell1, sizeof(bell1));
@@ -207,6 +235,7 @@ static void joy_set(Joy *j, float x, float y) {
 }
 static void start_round(void) {
     layout(); game_reset(&g); release_joys();
+    ready_host = ready_guest = my_ready = 0;
     rtime = ROUND_SEC; state = S_INTRO; stimer = 2.0f;
 }
 static void start_match(void) {
@@ -230,9 +259,10 @@ static void time_up(void) {
 }
 
 static void update(float dt) {
+    if (pvp == 2) return;          // mehmon: holat xostdan keladi (pvp_recv)
     if (state == S_INTRO) { stimer -= dt; if (stimer <= 0) { state = S_FIGHT; bell(1); } return; }
-    if (state == S_BREAK) { stimer += dt; return; }
-    if (state == S_END) { stimer += dt; return; }
+    if (state == S_BREAK) { stimer += dt; if (pvp == 1 && ready_host && ready_guest) { rnd++; start_round(); } return; }
+    if (state == S_END) { stimer += dt; if (pvp == 1 && ready_host && ready_guest) start_match(); return; }
     if (state != S_FIGHT) return;
 
     Input in[2];
@@ -243,7 +273,9 @@ static void update(float dt) {
     in[0].arm[0][0] = jl.vx; in[0].arm[0][1] = -jl.vy;
     in[0].arm[1][0] = jr.vx; in[0].arm[1][1] = -jr.vy;
     if (lay == 2) game_two_stick(&g, 0, dt, &in[0]);   // yurish qo'l joystiklaridan chiqariladi
-    ai_input(&g, dt, diff, &in[1]);
+    if (pvp == 1) {                // raqib = mehmon: kirishi tarmoqdan (0.3 s dan eski bo'lsa nol)
+        if (net_clock - t_rin < 0.3) { in[1] = rin; if (r_two) game_two_stick(&g, 1, dt, &in[1]); }
+    } else ai_input(&g, dt, diff, &in[1]);
     game_step(&g, dt, in);
 
     if (g.f[1].hp <= 0) end_round(1, 1);
@@ -295,21 +327,25 @@ static void draw_game(void) {
     rect(CX - RING, CY - RING, t, 2 * RING, .8f, .1f, .1f, 1);
     rect(CX + RING - t, CY - RING, t, 2 * RING, .8f, .1f, .1f, 1);
 
-    draw_fighter(&g.f[1], .85f, .4f, .2f);
-    if (g.ai.state == 1) circle(SXW(g.f[1].x), SYW(g.f[1].y), 8 * U, 1, .2f, .2f, 0.25f);   // hujum ogohlantirishi
-    draw_fighter(&g.f[0], .2f, .5f, 1.f);
+    draw_fighter(&g.f[1 - me], .85f, .4f, .2f);
+    if (!pvp && g.ai.state == 1) circle(SXW(g.f[1].x), SYW(g.f[1].y), 8 * U, 1, .2f, .2f, 0.25f);   // hujum ogohlantirishi
+    draw_fighter(&g.f[me], .2f, .5f, 1.f);
 
     // HUD: HP, vaqt, raund
     rect(CX - 48 * U, 3 * U, 36 * U, 3 * U, .2f, .2f, .2f, 1);
-    rect(CX - 48 * U, 3 * U, 36 * U * clampf(g.f[0].hp / 100, 0, 1), 3 * U, .2f, .6f, 1, 1);
+    rect(CX - 48 * U, 3 * U, 36 * U * clampf(g.f[me].hp / 100, 0, 1), 3 * U, .2f, .6f, 1, 1);
     rect(CX + 12 * U, 3 * U, 36 * U, 3 * U, .2f, .2f, .2f, 1);
-    rect(CX + 12 * U, 3 * U, 36 * U * clampf(g.f[1].hp / 100, 0, 1), 3 * U, .9f, .4f, .2f, 1);
+    rect(CX + 12 * U, 3 * U, 36 * U * clampf(g.f[1 - me].hp / 100, 0, 1), 3 * U, .9f, .4f, .2f, 1);
     char buf[48];
     int secs = (int)ceilf(rtime);
     snprintf(buf, sizeof(buf), "%d:%02d", secs / 60, secs % 60);
     text(buf, CX, 4.5f * U, .9f, 1, 1, 1, 1);
     snprintf(buf, sizeof(buf), "RAUND %d/3", rnd);
     text(buf, CX, 12 * U, .5f, .85f, .85f, .85f, .9f);
+    if (pvp && net.rtt_ms >= 0) {
+        snprintf(buf, sizeof(buf), "PING %d", (int)(net.rtt_ms + 0.5f));
+        text(buf, CX + 30 * U, 12 * U, .45f, .6f, .9f, .6f, .9f);
+    }
 
     if (lay != 2) draw_joy(&mv);
     draw_joy_arm(&jl); draw_joy_arm(&jr);
@@ -324,7 +360,11 @@ static void draw_game(void) {
         text(t1, CX, CY - 8 * U, 1.0f, 1, 1, 1, 1);
         snprintf(buf, sizeof(buf), "SCHET %d:%d", pw, ew);
         text(buf, CX, CY + 10 * U, 1.1f, 1, .9f, .2f, 1);
-        if (stimer > 1) text("KEYINGI RAUND: EKRANGA TEGING", CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
+        if (stimer > 1) {
+            const char *p = !pvp ? "KEYINGI RAUND: EKRANGA TEGING"
+                          : (rdy_me ? "RAQIB KUTILMOQDA..." : (rdy_opp ? "RAQIB TAYYOR. EKRANGA TEGING" : "KEYINGI RAUND: EKRANGA TEGING"));
+            text(p, CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
+        }
     } else if (state == S_END) {
         if (finalres == 1) rect(0, 0, (float)W, (float)H, 0, .6f, .2f, 0.55f);
         else if (finalres == 2) rect(0, 0, (float)W, (float)H, .7f, 0, 0, 0.55f);
@@ -333,7 +373,12 @@ static void draw_game(void) {
         text(s, CX, CY - 8 * U, 1.5f, 1, 1, 1, 1);
         snprintf(buf, sizeof(buf), "RAUNDLAR %d:%d", pw, ew);
         text(buf, CX, CY + 8 * U, 1.0f, 1, .9f, .2f, 1);
-        if (stimer > 1) text("MENYUGA QAYTISH: EKRANGA TEGING", CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
+        if (stimer > 1) {
+            const char *p = !pvp ? "MENYUGA QAYTISH: EKRANGA TEGING"
+                          : (rdy_me ? "RAQIB KUTILMOQDA..." : (rdy_opp ? "RAQIB QAYTA O'YNASHNI XOHLAYAPTI" : "QAYTA O'YNASH: EKRANGA TEGING"));
+            text(p, CX, CY + 26 * U, .6f, 1, 1, 1, 0.9f);
+            if (pvp) text("CHIQISH: ORQAGA TUGMASI", CX, CY + 34 * U, .5f, .8f, .8f, .8f, 0.9f);
+        }
     }
 }
 
@@ -385,6 +430,8 @@ static void draw_help(void) {
 static void draw_menu(void) {
     rect(W - 40 * U, 4 * U, 36 * U, 9 * U, .2f, .22f, .3f, 1);
     text("YORIQNOMA", W - 22 * U, 8.5f * U, .55f, 1, 1, 1, 1);
+    rect(4 * U, 4 * U, 36 * U, 9 * U, .15f, .35f, .6f, 1);
+    text("ONLAYN", 22 * U, 8.5f * U, .55f, 1, 1, 1, 1);
     text("BOKS", CX, 12 * U, 2.2f, 1, .25f, .2f, 1);
     rect(CX - 30 * U, 22 * U, 60 * U, 0.8f * U, .9f, .2f, .2f, 1);
     text("JOYSTIK JOYLASHUVI", CX, 27 * U, .6f, .8f, .8f, .8f, 1);
@@ -423,6 +470,7 @@ static void menu_tap(float x, float y) {
     for (int i = 0; i < 3; i++)
         if (in(x, y, CX + (i - 1) * 34 * U, 65 * U, 32 * U, 9 * U)) { diff = i; return; }
     if (in(x, y, W - 22 * U, 8.5f * U, 36 * U, 9 * U)) { state = S_HELP; help_page = 0; return; }
+    if (in(x, y, 22 * U, 8.5f * U, 36 * U, 9 * U)) { online_open(); return; }
     if (in(x, y, CX, 87 * U, 66 * U, 14 * U)) start_match();
 }
 
@@ -430,7 +478,278 @@ static void draw(void) {
     glViewport(0, 0, W, H);
     glClearColor(.07f, .07f, .09f, 1); glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog); glUniform2f(locRes, (float)W, (float)H);
-    if (state == S_MENU) draw_menu(); else if (state == S_HELP) draw_help(); else draw_game();
+    if (state == S_MENU) draw_menu(); else if (state == S_HELP) draw_help();
+    else if (state >= S_ONLINE) draw_online(); else draw_game();
+}
+
+/* ---------- onlayn ekranlari ---------- */
+static void btn_draw(float dx, float y, float w, float h, const char *label, float sc, float r, float g_, float b) {
+    rect(CX + (dx - w / 2) * U, (y - h / 2) * U, w * U, h * U, r, g_, b, 1);
+    text(label, CX + dx * U, y * U, sc, 1, 1, 1, 1);
+}
+static int btn_hit(float x, float y, float dx, float cy, float w, float h) {
+    return in(x, y, CX + dx * U, cy * U, w * U, h * U);
+}
+static void back_draw(const char *label) {
+    rect(4 * U, 86.5f * U, 28 * U, 9 * U, .35f, .2f, .2f, 1);
+    text(label, 18 * U, 91 * U, .5f, 1, 1, 1, 1);
+}
+static int back_hit(float x, float y) { return in(x, y, 18 * U, 91 * U, 28 * U, 9 * U); }
+
+static void refresh_ips(double t) {
+    n_my_ips = net_local_ips(my_ips, NET_MAX_IPS);
+    t_ips = t;
+}
+static void online_open(void) {            // menyudan "ONLAYN"
+    net_close(&net);
+    if (!my_name[0]) snprintf(my_name, sizeof(my_name), "BOKSCHI-%04d", rand() % 10000);
+    online_msg = "";
+    state = S_ONLINE;
+}
+static void start_hosting(void) {
+    refresh_ips(net_clock);
+    if (net_host(&net, my_name, 0) != 0) { online_msg = net_err_text(net.err); net_close(&net); state = S_ONLINE; return; }
+    online_msg = ""; state = S_HOSTING;
+}
+static void start_search(void) {
+    refresh_ips(net_clock);
+    net_search(&net);                      // xato bo'lsa net.state == NET_ENDED: ekran ko'rsatadi, IP bilan ulanish ishlayveradi
+    online_msg = ""; state = S_SEARCH;
+}
+static void ip_prefill(void) {             // o'z IP'ning dastlabki 3 raqami: ko'pincha faqat oxirgisini yozish kifoya
+    ipbuf[0] = 0;
+    if (n_my_ips > 0) {
+        char s[16]; net_ip_str(my_ips[0], s);
+        char *last = strrchr(s, '.');
+        if (last) { last[1] = 0; snprintf(ipbuf, sizeof(ipbuf), "%s", s); }
+    }
+}
+static void go_back(void) {                // Android "orqaga" tugmasi va ORQAGA tugmalari
+    release_joys();
+    pvp = 0; me = 0; flip = 0;             // PvP'dan chiqish (net_close raqibga BYE yuboradi)
+    if (state == S_ONLINE) { state = S_MENU; }
+    else if (state == S_HOSTING || state == S_SEARCH) { net_close(&net); online_msg = ""; state = S_ONLINE; }
+    else if (state == S_IPENTRY) { start_search(); }
+    else if (state == S_LOBBY) {
+        int host = net.role == NET_ROLE_HOST;
+        net_close(&net);
+        if (host) start_hosting(); else start_search();
+    } else { net_close(&net); state = S_MENU; layout(); }
+}
+
+static void draw_online(void) {
+    char b[64];
+    int dots = ((int)(ui_t * 2)) % 4;
+    static const char *DOTS[4] = { "", ".", "..", "..." };
+    if (state == S_ONLINE) {
+        text("ONLAYN", CX, 12 * U, 1.8f, 1, .25f, .2f, 1);
+        text("IKKI TELEFON BIR WI-FI YOKI HOTSPOTDA", CX, 25 * U, .5f, .8f, .8f, .8f, 1);
+        btn_draw(0, 42, 90, 16, "XONA OCHISH", 1.0f, .15f, .6f, .25f);
+        btn_draw(0, 64, 90, 16, "XONAGA QO'SHILISH", 1.0f, .2f, .35f, .75f);
+        if (online_msg[0]) text(online_msg, CX, 80 * U, .6f, 1, .4f, .3f, 1);
+        back_draw("ORQAGA");
+    } else if (state == S_HOSTING) {
+        text("XONA OCHILDI", CX, 12 * U, 1.5f, 1, .85f, .2f, 1);
+        snprintf(b, sizeof(b), "RAQIB KUTILMOQDA%s", DOTS[dots]);
+        text(b, CX, 27 * U, .8f, 1, 1, 1, 1);
+        if (n_my_ips > 0) {
+            text("SIZNING IP MANZILINGIZ:", CX, 41 * U, .55f, .8f, .8f, .8f, 1);
+            for (int i = 0; i < n_my_ips && i < 2; i++) {
+                net_ip_str(my_ips[i], b);
+                text(b, CX, (53 + i * 11) * U, i == 0 ? 1.3f : .8f, i == 0 ? .3f : .6f, i == 0 ? 1.f : .8f, i == 0 ? .5f : .6f, 1);
+            }
+        } else {
+            text("WI-FI GA ULANING YOKI HOTSPOT YOQING", CX, 50 * U, .6f, 1, .5f, .3f, 1);
+        }
+        text("RAQIB: ONLAYN, XONAGA QO'SHILISH", CX, 72 * U, .5f, .7f, .7f, .7f, 1);
+        text("XONA AVTOMATIK TOPILMASA IP KIRITADI", CX, 79 * U, .5f, .7f, .7f, .7f, 1);
+        back_draw("BEKOR");
+    } else if (state == S_SEARCH) {
+        text("XONALAR", CX, 10 * U, 1.4f, 1, .85f, .2f, 1);
+        if (net.state == NET_ENDED) {
+            text(net_err_text(net.err), CX, 40 * U, .8f, 1, .4f, .3f, 1);
+            text("IP KIRITISH ORQALI ULANING", CX, 52 * U, .55f, .8f, .8f, .8f, 1);
+        } else if (net.nrooms == 0) {
+            snprintf(b, sizeof(b), "XONA QIDIRILMOQDA%s", DOTS[dots]);
+            text(b, CX, 38 * U, .8f, 1, 1, 1, 1);
+            text("IKKALA TELEFON BIR TARMOQDA BO'LSIN", CX, 50 * U, .5f, .7f, .7f, .7f, 1);
+            text("TOPILMASA IP KIRITISH TUGMASINI BOSING", CX, 57 * U, .5f, .7f, .7f, .7f, 1);
+        } else {
+            for (int i = 0; i < net.nrooms && i < 4; i++) {
+                const NetRoom *r = &net.rooms[i];
+                char ip[16]; net_ip_str(r->ip, ip);
+                snprintf(b, sizeof(b), "%s %s", r->name, ip);
+                float y = 28 + i * 13.f;
+                rect(CX - 58 * U, (y - 5.5f) * U, 116 * U, 11 * U, r->full ? .25f : .15f, r->full ? .25f : .4f, r->full ? .28f : .6f, 1);
+                text(r->full ? "BAND" : b, CX, y * U, .55f, 1, 1, 1, r->full ? .6f : 1);
+            }
+        }
+        btn_draw(46, 91, 40, 9, "IP KIRITISH", .5f, .2f, .22f, .35f);
+        back_draw("ORQAGA");
+    } else if (state == S_IPENTRY) {
+        rect(CX - 46 * U, 4 * U, 92 * U, 15 * U, .12f, .13f, .18f, 1);
+        text(ipbuf, CX - 2 * U, 11.5f * U, 1.1f, 1, 1, 1, 1);
+        float cw = (float)strlen(ipbuf) * 6 * 1.1f * U;
+        if (((int)(ui_t * 2)) % 2 == 0) rect(CX - 2 * U + cw / 2, 5.5f * U, 0.9f * U, 12 * U, 1, .85f, .2f, 1);
+        if (online_msg[0]) text(online_msg, CX, 24 * U, .6f, 1, .4f, .3f, 1);
+        else text("XOST TELEFONDAGI IP NI KIRITING", CX, 24 * U, .5f, .7f, .7f, .7f, 1);
+        static const char *KEYS[12] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "O'CH" };
+        for (int i = 0; i < 12; i++) {
+            float dx = ((i % 3) - 1) * 24.f, y = 35 + (i / 3) * 14.f;
+            btn_draw(dx, y, 22, 12, KEYS[i], i == 11 ? .5f : 0.9f, .2f, .22f, .3f);
+        }
+        btn_draw(52, 56, 30, 22, "ULANISH", .6f, .15f, .6f, .25f);
+        back_draw("ORQAGA");
+    } else if (state == S_LOBBY) {
+        if (net.state == NET_CONNECTING) {
+            snprintf(b, sizeof(b), "ULANMOQDA%s", DOTS[dots]);
+            text(b, CX, 30 * U, 1.3f, 1, 1, 1, 1);
+            net_ip_str(net.peer_ip, b);
+            text(b, CX, 48 * U, 1.0f, .6f, .8f, 1, 1);
+        } else if (net.state == NET_CONNECTED) {
+            text("ULANDI!", CX, 18 * U, 1.8f, .3f, 1, .5f, 1);
+            snprintf(b, sizeof(b), "RAQIB: %s", net.peer_name);
+            text(b, CX, 38 * U, .9f, 1, 1, 1, 1);
+            snprintf(b, sizeof(b), "SIZ: %s", net.role == NET_ROLE_HOST ? "XOST" : "MEHMON");
+            text(b, CX, 50 * U, .6f, .8f, .8f, .8f, 1);
+            if (net.rtt_ms >= 0) snprintf(b, sizeof(b), "PING: %d MS", (int)(net.rtt_ms + 0.5f));
+            else snprintf(b, sizeof(b), "PING: ...");
+            text(b, CX, 62 * U, .9f, .9f, .9f, .4f, 1);
+            if (net.role == NET_ROLE_HOST) btn_draw(0, 78, 70, 14, "BOSHLASH", 1.0f, .15f, .6f, .25f);
+            else text("XOST O'YINNI BOSHLASHINI KUTING", CX, 78 * U, .6f, .8f, .8f, .8f, 1);
+        } else {
+            text(net_err_text(net.err), CX, 38 * U, 1.1f, 1, .4f, .3f, 1);
+            if (net.err == NETERR_BUSY) text("XONADA BOSHQA O'YINCHI BOR", CX, 52 * U, .55f, .8f, .8f, .8f, 1);
+            else if (net.err == NETERR_TIMEOUT) text("IP VA TARMOQNI TEKSHIRING", CX, 52 * U, .55f, .8f, .8f, .8f, 1);
+        }
+        back_draw(net.role == NET_ROLE_HOST && net.state == NET_ENDED ? "QAYTA OCH" : "ORQAGA");
+    }
+}
+
+static void online_tap(float x, float y) {
+    if (back_hit(x, y)) { go_back(); return; }
+    if (state == S_ONLINE) {
+        if (btn_hit(x, y, 0, 42, 90, 16)) start_hosting();
+        else if (btn_hit(x, y, 0, 64, 90, 16)) start_search();
+    } else if (state == S_SEARCH) {
+        if (btn_hit(x, y, 46, 91, 40, 9)) {
+            net_close(&net); refresh_ips(net_clock); ip_prefill(); online_msg = ""; state = S_IPENTRY; return;
+        }
+        if (net.state != NET_SEARCHING) return;
+        for (int i = 0; i < net.nrooms && i < 4; i++) {
+            if (in(x, y, CX, (28 + i * 13.f) * U, 116 * U, 11 * U) && !net.rooms[i].full) {
+                NetRoom r = net.rooms[i];
+                net_join(&net, r.ip, r.port, my_name);
+                state = S_LOBBY;
+                return;
+            }
+        }
+    } else if (state == S_LOBBY) {
+        if (net.state == NET_CONNECTED && net.role == NET_ROLE_HOST && btn_hit(x, y, 0, 78, 70, 14)) host_begin();
+    } else if (state == S_IPENTRY) {
+        static const char KC[12] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 8 };
+        for (int i = 0; i < 12; i++) {
+            if (!btn_hit(x, y, ((i % 3) - 1) * 24.f, 35 + (i / 3) * 14.f, 22, 12)) continue;
+            size_t l = strlen(ipbuf);
+            online_msg = "";
+            if (KC[i] == 8) { if (l) ipbuf[l - 1] = 0; }
+            else if (l < 15) {
+                int dots_n = 0; for (size_t k = 0; k < l; k++) if (ipbuf[k] == '.') dots_n++;
+                if (KC[i] == '.' && (l == 0 || ipbuf[l - 1] == '.' || dots_n >= 3)) return;
+                ipbuf[l] = KC[i]; ipbuf[l + 1] = 0;
+            }
+            return;
+        }
+        if (btn_hit(x, y, 52, 56, 30, 22)) {
+            uint32_t ip;
+            if (!net_parse_ip(ipbuf, &ip)) { online_msg = "IP NOTO'G'RI"; return; }
+            net_join(&net, ip, 0, my_name);
+            state = S_LOBBY;
+        }
+    }
+}
+
+
+/* ---------- PvP: xost va mehmon ---------- */
+static void host_begin(void) {             // xost lobbida BOSHLASH ni bosdi
+    pvp = 1; me = 0; flip = 0; t_rin = -10; memset(&rin, 0, sizeof(rin)); r_two = 0;
+    start_match();
+}
+static int swap_res(int r) { return r == 1 ? 2 : (r == 2 ? 1 : r); }   // g'alaba <-> mag'lubiyat (mehmon nuqtai nazari)
+
+// Mehmon: xost holatini o'yin o'zgaruvchilariga qo'llaydi
+static void guest_apply(int first) {
+    int ns = mi.mstate;
+    if (ns < S_INTRO || ns > S_END) return;
+    rnd = mi.rnd; pw = mi.ew; ew = mi.pw;
+    lastres = swap_res(mi.lastres); finalres = swap_res(mi.finalres); isko = mi.isko;
+    rtime = mi.rtime; stimer = mi.stimer;
+    if (first || (ns != state && ns == S_INTRO)) { g = gt; release_joys(); layout(); }   // yangi raund/o'yin: sakrab o'tamiz
+    if (!first && ns != state) {
+        if (state == S_INTRO && ns == S_FIGHT) bell(1);
+        if (state == S_FIGHT && (ns == S_BREAK || ns == S_END)) bell(3);
+        if (ns == S_INTRO || ns == S_FIGHT) my_ready = 0;
+    }
+    state = ns;
+}
+
+static void pvp_recv(float dt) {
+    if (pvp && net.state != NET_CONNECTED) {         // aloqa uzildi: lobbida sababi ko'rsatiladi
+        pvp = 0; me = 0; flip = 0; release_joys(); layout(); state = S_LOBBY; return;
+    }
+    NetMsg m;
+    if (pvp == 1) {
+        while (net_recv(&net, &m)) {
+            Input in; int two, rdy;
+            if (m.kind != SYNC_K_INPUT || !sync_unpack_input(m.data, m.len, &in, &two, &rdy)) continue;
+            rin = in; r_two = two; t_rin = net_clock;
+            if (rdy && (state == S_BREAK || state == S_END) && stimer > 1) ready_guest = 1;
+        }
+        rdy_me = ready_host; rdy_opp = ready_guest;
+    } else if (pvp == 2 || (state == S_LOBBY && net.state == NET_CONNECTED && net.role == NET_ROLE_GUEST)) {
+        int got = 0;
+        while (net_recv(&net, &m))
+            if (m.kind == SYNC_K_SNAP && sync_unpack_snapshot(m.data, m.len, &gt, &mi)) got = 1;
+        if (pvp == 0) {
+            if (!got) return;
+            pvp = 2; me = 1; flip = 1; my_ready = 0; guest_apply(1);   // xost o'yinni boshladi
+        } else if (got) guest_apply(0);
+        sync_blend(&g, &gt, 1.f - expf(-40.f * dt));
+        game_refresh(&g);
+        rdy_me = my_ready; rdy_opp = mi.ready_host;
+    }
+}
+
+static void pvp_send(void) {
+    uint8_t b[64];
+    if (pvp == 1) {                                  // xost: har kadrda holat
+        MatchInfo h;
+        h.mstate = state; h.rnd = rnd; h.pw = pw; h.ew = ew; h.lastres = lastres; h.finalres = finalres; h.isko = isko;
+        h.ready_host = ready_host; h.ready_guest = ready_guest; h.rtime = rtime; h.stimer = stimer;
+        net_send(&net, SYNC_K_SNAP, b, sync_pack_snapshot(b, &g, &h));
+    } else if (pvp == 2) {                           // mehmon: har kadrda o'z joystiklari (avatar sistemasida)
+        Input in; memset(&in, 0, sizeof(in));
+        if (state == S_FIGHT) {
+            float sg = flip ? -1.f : 1.f;
+            in.mvx = mv.vx * sg; in.mvy = mv.vy * sg;
+            in.arm[0][0] = jl.vx; in.arm[0][1] = -jl.vy;
+            in.arm[1][0] = jr.vx; in.arm[1][1] = -jr.vy;
+        }
+        net_send(&net, SYNC_K_INPUT, b, sync_pack_input(b, &in, lay == 2, my_ready));
+    }
+}
+
+// Har kadrda: tarmoq + holat o'tishlari + o'yin
+static void tick(float dt, double t) {
+    net_clock = t; ui_t += dt;
+    net_update(&net, t);
+    pvp_recv(dt);
+    if (state == S_HOSTING) {
+        if (net.state == NET_CONNECTED) state = S_LOBBY;
+        else if (t - t_ips > 2.0) refresh_ips(t);       // hotspot yoqilsa/Wi-Fi o'zgarsa IP yangilanadi
+    }
+    update(dt);
+    pvp_send();
 }
 
 /* ---------- kirish ---------- */
@@ -439,7 +758,7 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
     if (AInputEvent_getType(e) == AINPUT_EVENT_TYPE_KEY) {
         if (AKeyEvent_getKeyCode(e) != AKEYCODE_BACK) return 0;
         int inmenu = (state == S_MENU);
-        if (!inmenu && AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) { state = S_MENU; release_joys(); layout(); }
+        if (!inmenu && AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) go_back();
         return inmenu ? 0 : 1;
     }
     if (AInputEvent_getType(e) != AINPUT_EVENT_TYPE_MOTION) return 0;
@@ -452,8 +771,21 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
         float x = AMotionEvent_getX(e, idx), y = AMotionEvent_getY(e, idx);
         if (state == S_MENU) { menu_tap(x, y); return 1; }
         if (state == S_HELP) { if (++help_page >= 3) state = S_MENU; return 1; }
-        if (state == S_END) { if (stimer > 1) { state = S_MENU; release_joys(); layout(); } return 1; }
-        if (state == S_BREAK) { if (stimer > 1) { rnd++; start_round(); } return 1; }
+        if (state >= S_ONLINE) { online_tap(x, y); return 1; }
+        if (state == S_END) {
+            if (stimer > 1) {
+                if (pvp == 1) ready_host = 1; else if (pvp == 2) my_ready = 1;
+                else { state = S_MENU; release_joys(); layout(); }
+            }
+            return 1;
+        }
+        if (state == S_BREAK) {
+            if (stimer > 1) {
+                if (pvp == 1) ready_host = 1; else if (pvp == 2) my_ready = 1;
+                else { rnd++; start_round(); }
+            }
+            return 1;
+        }
         if (state != S_FIGHT) return 1;
         int id = AMotionEvent_getPointerId(e, idx);
         for (int i = 0; i < 3; i++) {
@@ -540,6 +872,7 @@ void android_main(struct android_app *app) {
     app->onInputEvent = on_input;
     release_joys();
     srand((unsigned)time(NULL));
+    net_init(&net);
     snd_init();
     double last = now_sec();
 
@@ -547,7 +880,7 @@ void android_main(struct android_app *app) {
         int ev; struct android_poll_source *src;
         while (ALooper_pollAll(surf != EGL_NO_SURFACE ? 0 : -1, NULL, &ev, (void **)&src) >= 0) {
             if (src) src->process(app, src);
-            if (app->destroyRequested) { gl_term(); return; }
+            if (app->destroyRequested) { net_close(&net); gl_term(); return; }
         }
         if (surf == EGL_NO_SURFACE) { last = now_sec(); continue; }
 
@@ -558,7 +891,7 @@ void android_main(struct android_app *app) {
         double t = now_sec();
         float dt = clampf((float)(t - last), 0, 0.05f);
         last = t;
-        update(dt);
+        tick(dt, t);
         draw();
         eglSwapBuffers(dpy, surf);
     }

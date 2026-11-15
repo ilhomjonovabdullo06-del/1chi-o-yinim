@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Linux sinovlari (o'yin, tarmoq, menyu UI)
+        run: sh tests/run.sh
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
