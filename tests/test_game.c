@@ -16,7 +16,7 @@ int main(void){
  place(&g,0,22,0,-2);
  for(int i=0;i<60;i++){ Input in[2]={z,z}; if(i>=5&&i<25) in[0].arm[1][1]=1.f; game_step(&g,DT,in);}
  printf("  dushman hp=%.2f hits=%d\n",g.f[1].hp,g.hits[0]);
- CHECK(g.hits[0]>=1 && g.f[1].hp<95,"flick zarba beradi");
+ CHECK(g.hits[0]>=1 && g.f[1].hp<98.5f,"flick zarba beradi");
 
  printf("T2: sekin bosish (1.2s ichida) -> zarba yo'q\n");
  place(&g,0,22,0,-2);
@@ -144,6 +144,73 @@ int main(void){
      if (gg.hits[0] < 2) { bad++; printf("  masofa %.0f: faqat %d/2 zarba tegdi\n", ds[di], gg.hits[0]); }
    }
    CHECK(bad == 0, "har masofada ikkala qo'lning zarbasi tegadi");
+ }
+
+ printf("T19: mehmon prediksiyasi xost simulyatsiyasi bilan bir xil natija beradi\n");
+ {
+   Game gg; game_reset(&gg); float pg[2][2], pd[2];
+   for (int k = 0; k < 2; k++) { pg[k][0] = gg.f[0].glove[k][0]; pg[k][1] = gg.f[0].glove[k][1]; pd[k] = 0; }
+   srand(9); float maxd = 0; Input cur; memset(&cur, 0, sizeof cur);
+   for (int i = 0; i < 60 * 20; i++) {
+     if (i % 17 == 0) for (int k = 0; k < 2; k++) { cur.arm[k][0] = (rand() % 201 - 100) / 100.f; cur.arm[k][1] = (rand() % 201 - 100) / 100.f; }
+     Input in[2] = { cur, z };
+     game_step(&gg, DT, in);                      // raqib uzoqda: urilish yo'q
+     game_predict_arms(pg, pd, &cur, DT);
+     for (int k = 0; k < 2; k++) {
+       float e = fmaxf(fabsf(pg[k][0] - gg.f[0].glove[k][0]), fmaxf(fabsf(pg[k][1] - gg.f[0].glove[k][1]), fabsf(pd[k] - gg.f[0].guard[k])));
+       if (e > maxd) maxd = e;
+     }
+   }
+   printf("  eng katta farq = %.6f\n", maxd);
+   CHECK(gg.hits[0] == 0 && maxd < 1e-4f, "20 s tasodifiy kirishda prediksiya xostdagi qo'lqop va himoya bilan mos");
+ }
+
+ printf("T20: himoya charchog'i (qo'shimcha qiyinlik)\n");
+ {
+   Input gin; memset(&gin, 0, sizeof gin);
+   gin.arm[0][0] = .35f; gin.arm[0][1] = -.95f; gin.arm[1][0] = -.35f; gin.arm[1][1] = -.95f;
+   // 1) o'chiq: uzoq ushlansa ham doira o'zgarmaydi
+   Game a; game_reset(&a); a.fatigue = 0;
+   for (int i = 0; i < 60 * 8; i++) { Input in[2] = { z, gin }; game_step(&a, DT, in); }
+   CHECK(a.f[1].gscale[0] == 1.f && a.f[1].gscale[1] == 1.f, "qoida o'chiq: 8 s ushlansa ham himoya doirasi o'zgarmaydi");
+   // 2) yoqiq: vaqt profili
+   Game b; game_reset(&b); b.fatigue = 1; float s29 = 0, s40 = 0, s52 = 0;
+   for (int i = 0; i < 60 * 6; i++) { Input in[2] = { z, gin }; game_step(&b, DT, in);
+     if (i == (int)(2.9f * 60)) { s29 = b.f[1].gscale[0]; }
+     if (i == 4 * 60) { s40 = b.f[1].gscale[0]; }
+     if (i == (int)(5.2f * 60)) { s52 = b.f[1].gscale[0]; } }
+   printf("  doira ko'paytiruvchisi: 2.9 s=%.2f  4.0 s=%.2f  5.2 s=%.2f\n", s29, s40, s52);
+   CHECK(s29 > 0.99f, "3 soniyagacha himoya to'liq");
+   CHECK(s40 > 0.45f && s40 < 0.65f, "4 soniyada ~yarmiga kichraygan (3 s dan keyin 2 s da silliq)");
+   CHECK(fabsf(s52 - 0.1f) < 0.01f && fabsf(b.f[1].gscale[0] - 0.1f) < 0.01f, "5 soniyada 10 baravar kichik (0.1) va shundayligicha qoladi");
+   // 3) qo'llar alohida
+   Game c2; game_reset(&c2); c2.fatigue = 1; Input one; memset(&one, 0, sizeof one); one.arm[0][0] = .35f; one.arm[0][1] = -.95f;
+   for (int i = 0; i < 60 * 6; i++) { Input in[2] = { z, one }; game_step(&c2, DT, in); }
+   CHECK(fabsf(c2.f[1].gscale[0] - 0.1f) < 0.01f && c2.f[1].gscale[1] == 1.f, "faqat ushlangan qo'l charchaydi, ikkinchisi to'liq");
+   // 4) kichraygan himoya blokni o'tkazib yuboradi, yangisi bloklaydi
+   int blocks_early = 0, hits_late = 0;
+   { Game e; game_reset(&e); e.fatigue = 1; e.f[0].x = 0; e.f[0].y = 22; e.f[1].x = 0; e.f[1].y = -2;
+     for (int i = 0; i < 90; i++) { Input in[2] = { z, gin }; if (i >= 30 && i < 40) in[0].arm[1][1] = 1.f; game_step(&e, DT, in); }
+     blocks_early = e.blocks[1]; }
+   { Game e; game_reset(&e); e.fatigue = 1; e.f[0].x = 0; e.f[0].y = 22; e.f[1].x = 0; e.f[1].y = -2;
+     for (int i = 0; i < 60 * 8; i++) { Input in[2] = { z, gin }; if (i >= 60 * 6 && i < 60 * 6 + 10) in[0].arm[1][1] = 1.f; game_step(&e, DT, in); }
+     hits_late = e.hits[0]; }
+   printf("  erta zarba: bloklandi=%d | 6 s dan keyingi zarba: tegdi=%d\n", blocks_early, hits_late);
+   CHECK(blocks_early >= 1, "yangi himoya zarbani bloklaydi");
+   CHECK(hits_late >= 1, "6 s ushlangan (kichraygan) himoya zarbani o'tkazib yuboradi");
+   // 5) tiklanish
+   Game r; game_reset(&r); r.fatigue = 1;
+   for (int i = 0; i < 60 * 6; i++) { Input in[2] = { z, gin }; game_step(&r, DT, in); }
+   float before = r.f[1].gscale[0];
+   for (int i = 0; i < 60 * 3; i++) { Input in[2] = { z, z }; game_step(&r, DT, in); }
+   printf("  6 s ushlangach 3 s bo'shatildi: %.2f -> %.2f\n", before, r.f[1].gscale[0]);
+   CHECK(before < 0.11f && r.f[1].gscale[0] > 0.99f, "himoya bo'shatilgach doira tiklanadi");
+   // qisqa uzilish (0.5 s) charchoqni butunlay bekor qilmaydi
+   Game q; game_reset(&q); q.fatigue = 1;
+   for (int i = 0; i < 60 * 4; i++) { Input in[2] = { z, gin }; game_step(&q, DT, in); }
+   for (int i = 0; i < 30; i++) { Input in[2] = { z, z }; game_step(&q, DT, in); }
+   for (int i = 0; i < 60 * 2; i++) { Input in[2] = { z, gin }; game_step(&q, DT, in); }
+   CHECK(q.f[1].gscale[0] < 0.9f, "0.5 s ga bo'shatib yana ushlash charchoqni butunlay bekor qilmaydi");
  }
  printf("%s (%d xato)\n",fails?"XATO BOR":"HAMMASI O'TDI",fails);
  return fails;

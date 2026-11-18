@@ -10,6 +10,14 @@ gcc -O1 -Wall -Wextra -o $OUT/test_game tests/test_game.c $CPP/game.c -lm
 $OUT/test_game > $OUT/game.log; echo "  ok: $(grep -c "ok:" $OUT/game.log), FAIL: $(grep -c FAIL $OUT/game.log)"
 ! grep -q FAIL $OUT/game.log || { echo "O'YIN TESTLARI XATO"; exit 1; }
 
+echo "== balans (botlar AI ga qarshi, 90 s raundlar) =="
+gcc -O2 -Wall -Wextra -o $OUT/balance tests/balance.c $CPP/game.c -lm
+$OUT/balance > $OUT/balance.log; tail -n 1 $OUT/balance.log
+! grep -q FAIL $OUT/balance.log || { echo "BALANS CHEGARALARI BUZILDI (jadval: $OUT/balance.log)"; exit 1; }
+
+echo "== ekrandagi matnlar shriftga mos =="
+python3 tests/check_text.py $CPP/main.c
+
 echo "== sync: paketlash, yumshatish (ASan/UBSan) =="
 gcc -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $OUT/test_sync tests/test_sync.c $CPP/sync.c $CPP/game.c -lm
 $OUT/test_sync > $OUT/sync.log; tail -n 1 $OUT/sync.log
@@ -17,7 +25,9 @@ $OUT/test_sync > $OUT/sync.log; tail -n 1 $OUT/sync.log
 
 echo "== tarmoq qatlami (ASan/UBSan) =="
 gcc -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $OUT/test_net tests/test_net.c $CPP/net.c
-$OUT/test_net | tail -1
+$OUT/test_net > $OUT/net.log 2>&1 || true
+tail -n 1 $OUT/net.log
+! grep -q "FAIL" $OUT/net.log || { echo "TARMOQ TESTLARI XATO (log: $OUT/net.log)"; grep -B2 FAIL $OUT/net.log | head -20; exit 1; }
 
 echo "== menyu UI: host + 2 ta mehmon (alohida jarayonlar) =="
 # main.c nusxasi: text() ni o'rab olish uchun nomini o'zgartiramiz (asl fayl o'zgarmaydi)
@@ -31,6 +41,9 @@ $OUT/ui guestip     > $OUT/ui_g2.log 2>&1 && G2=0 || G2=1
 wait $HP && H=0 || H=1
 for f in host g1 g2; do tail -n 1 $OUT/ui_$f.log; done
 [ $G1 = 0 ] && [ $G2 = 0 ] && [ $H = 0 ] || { echo "UI TESTLARI XATO (loglar: $OUT)"; exit 1; }
+
+echo "== sozlamalar va yo'riqnoma =="
+BOKS_OUT=$OUT $OUT/ui settings | tail -n 1
 
 echo "== PvP: xost + mehmon (alohida jarayonlar, o'yin to'liq: raund, nokaut, qayta o'ynash, 25% paket yo'qotish) =="
 export BOKS_OUT=$OUT

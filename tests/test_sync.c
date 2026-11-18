@@ -14,17 +14,19 @@ int main(void) {
     g.f[1].x = -33.7f; g.f[1].y = -19.01f; g.f[1].hp = 0.5f;
     g.f[0].glove[1][0] = 22.5f; g.f[0].glove[1][1] = -4.2f; g.f[0].guard[0] = 0.73f;
     g.f[1].glove[0][0] = 3.3f;  g.f[1].glove[0][1] = 2.2f;  g.f[1].guard[1] = 1.0f;
+    g.f[0].gscale[0] = 0.37f; g.f[1].gscale[1] = 0.1f; g.fatigue = 1;
     uint8_t b[64];
 
     printf("T1: holat paketi aylanishi (pack -> unpack)\n");
     int n = sync_pack_snapshot(b, &g, &m);
-    CHECK(n == SYNC_SNAP_LEN, "uzunlik 44 bayt");
+    CHECK(n == SYNC_SNAP_LEN && n == 48, "uzunlik 48 bayt");
     CHECK(sync_unpack_snapshot(b, n, &d, &o), "yaroqli paket qabul qilindi");
     CHECK(fabsf(d.f[0].x - g.f[0].x) < 0.005f && fabsf(d.f[1].y - g.f[1].y) < 0.005f, "joylar aniqligi < 0.005 birlik");
     CHECK(fabsf(d.f[0].hp - g.f[0].hp) < 0.01f && fabsf(d.f[1].hp - 0.5f) < 0.01f, "HP aniqligi < 0.01");
     CHECK(fabsf(d.f[0].glove[1][0] - 22.5f) < 0.005f && fabsf(d.f[0].glove[1][1] + 4.2f) < 0.005f, "qo'lqop siljishi to'g'ri");
     CHECK(fabsf(d.f[0].guard[0] - 0.73f) < 0.004f && fabsf(d.f[1].guard[1] - 1.f) < 0.004f, "himoya darajasi to'g'ri");
     CHECK(d.f[0].flash > 0 && d.f[1].flash == 0, "zarba chaqnashi bayrog'i");
+    CHECK(fabsf(d.f[0].gscale[0] - 0.37f) < 0.004f && fabsf(d.f[1].gscale[1] - 0.1f) < 0.004f && d.fatigue == 1, "charchoq: doira ko'paytiruvchisi va qoida bayrog'i");
     CHECK(o.mstate == 3 && o.rnd == 2 && o.pw == 1 && o.ew == 0 && o.lastres == 1 && o.finalres == 3, "raund ma'lumotlari");
     CHECK(o.isko == 1 && o.ready_host == 1 && o.ready_guest == 0, "bayroqlar: nokaut/tayyorlik");
     CHECK(fabsf(o.rtime - 61.37f) < 0.011f && fabsf(o.stimer - 4.25f) < 0.011f, "taymerlar aniqligi 0.01 s");
@@ -42,8 +44,8 @@ int main(void) {
     n = sync_pack_snapshot(b, &g, &m);
     CHECK(!sync_unpack_snapshot(b, n - 1, &d, &o) && !sync_unpack_snapshot(b, n + 1, &d, &o), "noto'g'ri uzunlik");
     b[0] = SYNC_VER + 1; CHECK(!sync_unpack_snapshot(b, n, &d, &o), "boshqa protokol versiyasi"); b[0] = SYNC_VER;
-    uint8_t junk[44]; srand(5); int accepted = 0;
-    for (int i = 0; i < 1000; i++) { for (int k = 0; k < 44; k++) junk[k] = rand(); junk[0] = SYNC_VER; if (sync_unpack_snapshot(junk, 44, &d, &o)) {
+    uint8_t junk[SYNC_SNAP_LEN]; srand(5); int accepted = 0;
+    for (int i = 0; i < 1000; i++) { for (int k = 0; k < SYNC_SNAP_LEN; k++) junk[k] = rand(); junk[0] = SYNC_VER; if (sync_unpack_snapshot(junk, SYNC_SNAP_LEN, &d, &o)) {
         if (!(isfinite(d.f[0].x) && isfinite(d.f[1].hp))) accepted = -999999; else accepted++; } }
     CHECK(accepted > 0, "tasodifiy baytlar chiqishni buzmaydi (barcha qiymatlar chekli)");
 

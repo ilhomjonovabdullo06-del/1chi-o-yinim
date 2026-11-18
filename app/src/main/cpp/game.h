@@ -15,6 +15,8 @@ typedef struct {
     float glove[2][2];          // qo'lqop siljishi yelkaga nisbatan: {oldinga, yon}
     float prel[2][2];           // oldingi kadrdagi dunyo siljishi (tezlik uchun)
     float guard[2];             // himoya darajasi 0..1 (orqa yarim doira)
+    float gtime[2];             // himoya uzluksiz ushlab turilgan vaqt (charchoq qoidasi uchun)
+    float gscale[2];            // himoya doirasi ko'paytiruvchisi 1..0.1 (charchoq qoidasi)
     float vt[2];                // qo'lqopning raqib tomon tezligi
     float hitcd[2];
     float sx[2], sy[2];         // yelka (dunyo)
@@ -24,12 +26,15 @@ typedef struct {
 
 typedef struct { int state, hand, seen, strikes; float timer, cd, block; } AI;
 
-typedef struct { Fighter f[2]; AI ai; float t; int hits[2]; int blocks[2]; float walk_t[2]; int walking[2]; } Game;
+typedef struct { Fighter f[2]; AI ai; float t; int hits[2]; int blocks[2]; float walk_t[2]; int walking[2];
+                 int fatigue; } Game;   // fatigue: "himoya charchog'i" qoidasi (qo'shimcha qiyinlik). game_reset'dan KEYIN o'rnatiladi.
 
 void game_reset(Game *g);
 void game_step(Game *g, float dt, const Input in[2]);
 // Tarmoqdan kelgan holatdan hosilaviy qiymatlarni (yo'nalish, yelka, qo'lqop joyi) qayta hisoblaydi.
 void game_refresh(Game *g);
+// Faqat qo'llar: joystikka qarab qo'lqop siljishi va himoyasini bir qadamga yangilaydi (mehmon prediksiyasi uchun).
+void game_predict_arms(float glove[2][2], float guard[2], const Input *in, float dt);
 // 1-jangchini (dushman) boshqaradigan sun'iy intellekt. diff: 0 oddiy, 1 tez, 2 himoya.
 void ai_input(Game *g, float dt, int diff, Input *out);
 int  ai_blocking(const Game *g, int diff);

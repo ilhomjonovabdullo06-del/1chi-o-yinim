@@ -13,7 +13,7 @@ int sync_pack_snapshot(uint8_t *b, const Game *g, const MatchInfo *m) {
     b[0] = SYNC_VER; b[1] = (uint8_t)m->mstate; b[2] = (uint8_t)m->rnd; b[3] = (uint8_t)m->pw; b[4] = (uint8_t)m->ew;
     b[5] = (uint8_t)m->lastres; b[6] = (uint8_t)m->finalres;
     b[7] = (uint8_t)((m->isko ? 1 : 0) | (m->ready_host ? 2 : 0) | (m->ready_guest ? 4 : 0) |
-                     (g->f[0].flash > 0 ? 8 : 0) | (g->f[1].flash > 0 ? 16 : 0));
+                     (g->f[0].flash > 0 ? 8 : 0) | (g->f[1].flash > 0 ? 16 : 0) | (g->fatigue ? 32 : 0));
     p16(b + 8, (int)lrintf(clampf(m->rtime * 100.f, 0, 65535.f)));
     p16(b + 10, (int)lrintf(clampf(m->stimer * 100.f, 0, 65535.f)));
     int o = 12;
@@ -25,7 +25,8 @@ int sync_pack_snapshot(uint8_t *b, const Game *g, const MatchInfo *m) {
         for (int k = 0; k < 2; k++) {
             p16(b + o, q16(f->glove[k][0], 256.f)); p16(b + o + 2, q16(f->glove[k][1], 256.f));
             b[o + 4] = (uint8_t)lrintf(clampf(f->guard[k], 0, 1.f) * 255.f);
-            o += 5;
+            b[o + 5] = (uint8_t)lrintf(clampf(f->gscale[k], 0, 1.f) * 255.f);
+            o += 6;
         }
     }
     return o;
@@ -35,7 +36,7 @@ int sync_unpack_snapshot(const uint8_t *b, int len, Game *g, MatchInfo *m) {
     if (len != SYNC_SNAP_LEN || b[0] != SYNC_VER) return 0;
     m->mstate = b[1]; m->rnd = b[2]; m->pw = b[3]; m->ew = b[4]; m->lastres = b[5]; m->finalres = b[6];
     m->isko = b[7] & 1; m->ready_host = (b[7] >> 1) & 1; m->ready_guest = (b[7] >> 2) & 1;
-    g->f[0].flash = (b[7] & 8) ? 0.15f : 0.f; g->f[1].flash = (b[7] & 16) ? 0.15f : 0.f;
+    g->f[0].flash = (b[7] & 8) ? 0.15f : 0.f; g->f[1].flash = (b[7] & 16) ? 0.15f : 0.f; g->fatigue = (b[7] >> 5) & 1;
     m->rtime = gu16(b + 8) / 100.f; m->stimer = gu16(b + 10) / 100.f;
     int o = 12;
     for (int i = 0; i < 2; i++) {
@@ -45,7 +46,8 @@ int sync_unpack_snapshot(const uint8_t *b, int len, Game *g, MatchInfo *m) {
         for (int k = 0; k < 2; k++) {
             f->glove[k][0] = g16(b + o) / 256.f; f->glove[k][1] = g16(b + o + 2) / 256.f;
             f->guard[k] = b[o + 4] / 255.f;
-            o += 5;
+            f->gscale[k] = b[o + 5] / 255.f;
+            o += 6;
         }
     }
     return 1;
@@ -79,6 +81,7 @@ void sync_blend(Game *r, const Game *t, float k) {
             a->glove[j][0] += (b->glove[j][0] - a->glove[j][0]) * k;
             a->glove[j][1] += (b->glove[j][1] - a->glove[j][1]) * k;
             a->guard[j] += (b->guard[j] - a->guard[j]) * k;
+            a->gscale[j] += (b->gscale[j] - a->gscale[j]) * k;
         }
     }
 }

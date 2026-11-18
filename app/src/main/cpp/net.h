@@ -13,7 +13,7 @@
 
 #define NET_DISCOVERY_PORT 47777   // mehmon xonalarni shu portda tinglaydi
 #define NET_GAME_PORT      47778   // host shu portda o'yin/salomlashuv paketlarini qabul qiladi
-#define NET_PROTO_VER      1
+#define NET_PROTO_VER      2   // 2: PvP sinxronlash (3-qism) qo'shildi; eski versiyalar bilan mos emas
 #define NET_NAME_LEN       16
 #define NET_MAX_ROOMS      8
 #define NET_MAX_DATA       512     // bitta paketdagi foydali ma'lumot chegarasi
@@ -52,6 +52,7 @@ typedef struct {
     uint32_t session, nonce, room_id;
     uint32_t peer_ip; uint16_t peer_port;
     double t_beacon, t_hello, t_ping, t_rx, t_start, t_probe;
+    double t_other_ver;          // boshqa versiyadagi ilovadan paket kelgan oxirgi vaqt (UI ogohlantirish uchun)
     uint16_t tx_seq, rx_seq; int rx_seq_ok;
     float rtt_ms;                // silliqlangan ping (-1 = hali yo'q)
     NetRoom rooms[NET_MAX_ROOMS]; int nrooms;

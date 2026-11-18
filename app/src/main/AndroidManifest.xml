@@ -1,17 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Onlayn (UDP, bir Wi-Fi/hotspot ichida) uchun. Boshqa ruxsat kerak emas: WifiManager ishlatilmaydi. -->
+    <!-- Onlayn (UDP, bir Wi-Fi/hotspot ichida) uchun. API 36 gacha mahalliy tarmoq INTERNET ruxsati bilan beriladi.
+         DIQQAT: API 37 ga o'tganda ACCESS_LOCAL_NETWORK ruxsatini (Nearby devices) so'rash kerak bo'ladi. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+    <!-- 3 joystik uchun bir vaqtda bir necha barmoq kerak -->
+    <uses-feature android:name="android.hardware.touchscreen.multitouch.distinct" android:required="true" />
     <application
         android:label="Boks"
         android:icon="@mipmap/ic_launcher"
-        android:hasCode="false">
+        android:appCategory="game"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:hasCode="true">
+        <!-- appCategory=game: Android 16 da katta ekranlarda yo'nalish cheklovi o'yinlarga qo'llanmaydi.
+             enableOnBackInvokedCallback=false: API 36 da ham "orqaga" tugmasi o'yinga yetib borishi uchun (vaqtinchalik, API 37 gacha). -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".BoksActivity"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
             <meta-data android:name="android.app.lib_name" android:value="boks" />
             <intent-filter>

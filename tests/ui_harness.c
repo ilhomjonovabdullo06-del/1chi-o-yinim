@@ -48,6 +48,8 @@ static int read_state(const char *name, float v[6], double secs) {
     }
     return 0;
 }
+static void tap_px(float x, float y);
+static void tap_topic(int i) { tap_px(CX + ((i % 2) ? 45 : -45) * U, (32 + (i / 2) * 19) * U); }
 static float dist01(void) { return hypotf(g.f[0].x - g.f[1].x, g.f[0].y - g.f[1].y); }
 static void flick(Joy *j, double hold, double rest) { j->vy = -1; run_for(hold); j->vy = 0; run_for(rest); }
 
@@ -140,9 +142,16 @@ int main(int argc, char **argv) {
         CHECK(WAIT(state == S_LOBBY, 40), "mehmon ulandi");
         run_for(2.5);   // mehmon lobbi matnini tekshirib ulgurishi uchun
         CHECK(strstr(lastframe, "BOSHLASH") != NULL, "lobbida xostga BOSHLASH tugmasi ko'rinadi");
+        fatigue_opt = 1;                                  // xost himoya charchog'i qoidasini yoqdi
+        run_for(0.3);
+        CHECK(strstr(lastframe, "QOIDA: HIMOYA CHARCHOGI YOQIQ") != NULL, "lobbida xostga qoida ko'rinadi");
         tap(0, 78);
-        CHECK(pvp == 1 && me == 0 && state == S_INTRO && g.f[0].y > 0, "BOSHLASH: xost o'yinni boshladi");
+        CHECK(pvp == 1 && me == 0 && state == S_INTRO && g.f[0].y > 0 && g.fatigue == 1, "BOSHLASH: xost o'yinni boshladi (charchoq qoidasi bilan)");
         CHECK(WAIT(state == S_FIGHT, 6) && bell_count >= 1, "intro tugadi, jang boshlandi, qo'ng'iroq chalindi");
+        jl.vx = .35f; jl.vy = .95f; jr.vx = -.35f; jr.vy = .95f;   // xost himoyani 5.5 s ushlab turadi (charchoq)
+        run_for(5.5);
+        CHECK(g.f[0].gscale[0] < 0.11f && g.f[0].gscale[1] < 0.11f, "xostda ikkala qo'lning himoya doirasi 10 baravar kichraydi");
+        jl.vx = jl.vy = jr.vx = jr.vy = 0;
         CHECK(WAIT(dist01() < 20, 12) && g.f[1].y > -14, "mehmonning yurishi xostda raqibni harakatlantirdi");
         run_for(0.3);
         double te = now_sec() + 10;
@@ -175,7 +184,9 @@ int main(int argc, char **argv) {
         while (now_sec() < t0 + 7.0) step();
         write_state("pvp_B.txt");
         printf("  xost (yo'qotishdan keyin): hp xost=%.1f mehmon=%.1f\n", g.f[0].hp, g.f[1].hp);
+        double tl = now_sec();
         CHECK(WAIT(state == S_LOBBY && net.state == NET_ENDED && net.err == NETERR_PEER_LEFT && pvp == 0, 15), "mehmon chiqdi: xost lobbida RAQIB CHIQIB KETDI ni ko'radi");
+        printf("  xost chiqishni bildi: %.2f s ichida\n", now_sec() - tl);
         (void)v;
     } else if (!strcmp(role, "pvpguest")) {
         float v[6];
@@ -188,12 +199,15 @@ int main(int argc, char **argv) {
         CHECK(strstr(lastframe, "XOST O'YINNI BOSHLASHINI KUTING") != NULL, "mehmon lobbida xostni kutadi (BOSHLASH tugmasi yo'q)");
         CHECK(WAIT(pvp == 2 && state == S_INTRO, 40), "xost boshladi: mehmon o'yin ekraniga o'tdi");
         CHECK(me == 1 && flip == 1, "mehmon o'zini pastda ko'radi (tasvir 180 gradus aylantirilgan)");
+        step(); step();
+        CHECK(g.fatigue == 1 && strstr(lastframe, "HIMOYA CHARCHOGI YOQIQ") != NULL, "mehmon qoidani xostdan oldi va raund boshida ko'radi");
         CHECK(WAIT(state == S_FIGHT, 6) && bell_count >= 1, "jang boshlandi, mehmonda ham qo'ng'iroq chalindi");
         float y0 = g.f[1].y;
         mv.vy = -1;                                     // mehmon ekranida tepaga = raqib tomon
         CHECK(WAIT(dist01() < 14, 8), "mehmon raqibga yaqinlashdi (o'z ekranida)");
         mv.vy = 0;
         CHECK(g.f[1].y > y0 + 5, "mehmonning yurishi o'z ekranida ko'rinadi");
+        CHECK(WAIT(g.f[0].gscale[0] < 0.15f && g.f[0].guard[0] > 0.5f, 9), "xostning charchagan himoyasi mehmon ekranida kichraydi");
         CHECK(WAIT(g.f[1].hp < 90, 15), "xost zarbalari mehmon ekranida HP ni kamaytirdi");
         CHECK(read_state("pvp_A.txt", v, 20), "xost holati olindi");
         run_for(0.4);
@@ -229,9 +243,77 @@ int main(int argc, char **argv) {
         printf("  mehmon (yo'qotishdan keyin): o'z=(%.2f,%.2f,hp %.2f) raqib=(%.2f,%.2f,hp %.2f)\n", gt.f[1].x, gt.f[1].y, gt.f[1].hp, gt.f[0].x, gt.f[0].y, gt.f[0].hp);
         CHECK(fabsf(gt.f[0].x - v[0]) < .05f && fabsf(gt.f[0].y - v[1]) < .05f && fabsf(gt.f[1].x - v[3]) < .05f && fabsf(gt.f[1].y - v[4]) < .05f, "yo'qotishdan keyin joylar mos (< 0.05)");
         CHECK(fabsf(gt.f[0].hp - v[2]) < .05f && fabsf(gt.f[1].hp - v[5]) < .05f, "yo'qotishdan keyin HP mos (< 0.05)");
-        key_back();
-        CHECK(state == S_MENU && pvp == 0 && flip == 0 && net.state == NET_IDLE, "orqaga tugmasi: menyuga, PvP tozalandi");
+        {   // prediksiya: xostdan hech narsa kelmasa ham o'z qo'li joystikka darhol javob beradi
+            run_for(0.3);
+            float rest = g.f[1].glove[1][0];
+            net.sim_loss = 100;
+            jr.vy = -1;
+            for (int i = 0; i < 5; i++) step();
+            float own = g.f[1].glove[1][0], host_side = gt.f[1].glove[1][0];
+            jr.vy = 0; run_for(0.3); net.sim_loss = 0;
+            printf("  qo'lqop oldinga: tinch=%.1f prediksiya=%.1f xostdan(kechikkan)=%.1f\n", rest, own, host_side);
+            CHECK(own > rest + 8 && host_side < rest + 3, "paket kelmasa ham o'z qo'li 5 kadrda cho'zildi (prediksiya), xost holati esa eski");
+            CHECK(WAIT(fabsf(g.f[1].glove[1][0] - gt.f[1].glove[1][0]) < 0.5f, 3), "aloqa tiklangach o'z qo'li xost holatiga mos");
+        }
+        app_paused();                                    // ilova fonga o'tdi (bosh ekran / boshqa ilova)
+        CHECK(state == S_MENU && pvp == 0 && flip == 0 && net.state == NET_IDLE, "fonga o'tish: menyuga, PvP tozalandi, raqibga BYE ketdi");
         run_for(0.3);
+    } else if (!strcmp(role, "settings")) {
+        snprintf(data_path, sizeof data_path, "%s", out_dir());
+        char p[320]; snprintf(p, sizeof p, "%s/boks.cfg", out_dir()); remove(p);
+        settings_load();
+        CHECK(lay == 0 && diff == 0, "fayl yo'q: standart sozlamalar");
+        state = S_MENU; layout();
+        tap_px(CX + 38 * U, 39 * U); tap_px(CX + 34 * U, 65 * U);
+        CHECK(lay == 2 && diff == 2, "menyu: 2 joystik va 3-qiyinlik tanlandi");
+        lay = 0; diff = 0; settings_load();
+        CHECK(lay == 2 && diff == 2, "qayta ishga tushganda sozlamalar tiklandi");
+        FILE *f = fopen(p, "w"); fputs("GARBAGE 9 9\n", f); fclose(f);
+        lay = 1; diff = 1; settings_load();
+        CHECK(lay == 1 && diff == 1, "buzuq fayl sozlamalarni o'zgartirmaydi");
+        f = fopen(p, "w"); fputs("BOKS1 7 -1\n", f); fclose(f);
+        lay = 1; diff = 1; settings_load();
+        CHECK(lay == 1 && diff == 1, "chegaradan tashqari qiymatlar rad etildi");
+        data_path[0] = 0; lay = 1; settings_save(); settings_load();
+        CHECK(lay == 1, "papka berilmasa xavfsiz (hech narsa yozilmaydi)");
+        // himoya charchog'i tugmasi va saqlanishi
+        state = S_MENU; layout(); fatigue_opt = 0; lay = 0; diff = 0;
+        tap_px(CX, 80.5f * U);
+        CHECK(fatigue_opt == 1, "menyu: himoya charchog'i yoqildi");
+        step();
+        CHECK(strstr(lastframe, "HIMOYA CHARCHOGI - YOQIQ") != NULL, "tugma matni YOQIQ");
+        data_path[0] = 0; snprintf(data_path, sizeof data_path, "%s", out_dir()); settings_save();
+        fatigue_opt = 0; settings_load();
+        CHECK(fatigue_opt == 1, "charchoq qoidasi saqlandi va qayta ishga tushganda tiklandi");
+        f = fopen(p, "w"); fputs("BOKS2 1 1 5\n", f); fclose(f); fatigue_opt = 0; lay = 0; settings_load();
+        CHECK(fatigue_opt == 0 && lay == 0, "BOKS2 da noto'g'ri qiymat rad etildi");
+        f = fopen(p, "w"); fputs("BOKS1 2 1\n", f); fclose(f); lay = 0; diff = 0; settings_load();
+        CHECK(lay == 2 && diff == 1, "eski BOKS1 formati ham o'qiladi");
+        // yo'riqnoma: katalog + mavzular
+        state = S_MENU; layout();
+        tap_px(W - 22 * U, 8.5f * U);
+        CHECK(state == S_HELP && help_page == -1, "YORIQNOMA katalogi ochildi");
+        step();
+        CHECK(strstr(lastframe, "QIYINLIK DARAJALARI") != NULL && strstr(lastframe, "HIMOYA CHARCHOGI") != NULL && strstr(lastframe, "2 TELEFONDA O'YNASH") != NULL, "katalogda hamma 6 mavzu ko'rinadi");
+        tap_topic(2);
+        CHECK(help_page == 2, "katalogdan 3-mavzu (2 joystik) ochildi");
+        tap_px(CX, CY);
+        CHECK(help_page == -1, "sahifada teginish katalogga qaytaradi");
+        tap_topic(3); step();
+        CHECK(help_page == 3 && strstr(lastframe, "OSON:") != NULL && strstr(lastframe, "O'RTA:") != NULL && strstr(lastframe, "QIYIN:") != NULL, "qiyinlik darajalari mavzusi: oson, o'rta, qiyin");
+        key_back();
+        CHECK(state == S_HELP && help_page == -1, "orqaga tugmasi sahifadan katalogga qaytaradi");
+        tap_topic(4); step();
+        CHECK(help_page == 4 && strstr(lastframe, "10 BARAVAR") != NULL && strstr(lastframe, "3 SONIYADAN") != NULL, "himoya charchog'i mavzusi: 3 soniya va 10 baravar");
+        tap_px(CX, CY);
+        tap_topic(5); step();
+        CHECK(help_page == 5 && strstr(lastframe, "WI-FI") != NULL, "2 telefonda o'ynash mavzusi: Wi-Fi/hotspot");
+        tap_px(CX, CY);
+        CHECK(help_page == -1, "katalog qayta ko'rinadi");
+        tap_px(CX, 91 * U);
+        CHECK(state == S_MENU, "katalogdagi ORQAGA tugmasi menyuga qaytaradi");
+        tap_px(W - 22 * U, 8.5f * U); key_back();
+        CHECK(state == S_MENU, "orqaga tugmasi (katalogda) menyuga qaytaradi");
     } else if (!strcmp(role, "guestbad")) {
         // hech kim yo'q manzilga ulanish: VAQT TUGADI ekrani
         run_for(0.3);

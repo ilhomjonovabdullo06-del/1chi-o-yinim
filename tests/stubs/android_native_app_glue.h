@@ -3,6 +3,8 @@
 #define STUB_GLUE_H
 #include <stdint.h>
 typedef struct ANativeWindow ANativeWindow;
+typedef struct ANativeActivity { const char *internalDataPath; } ANativeActivity;
+static inline void ANativeActivity_setWindowFlags(ANativeActivity *a, unsigned add, unsigned rem) { (void)a; (void)add; (void)rem; }
 typedef struct AInputEvent { int type, action, key; float x, y; } AInputEvent;
 struct android_app;
 struct android_poll_source { void (*process)(struct android_app *, struct android_poll_source *); };
@@ -10,8 +12,9 @@ struct android_app {
     void (*onAppCmd)(struct android_app *, int32_t);
     int32_t (*onInputEvent)(struct android_app *, AInputEvent *);
     ANativeWindow *window; int destroyRequested;
+    ANativeActivity *activity;
 };
-enum { APP_CMD_INIT_WINDOW = 1, APP_CMD_TERM_WINDOW = 2 };
+enum { APP_CMD_INIT_WINDOW = 1, APP_CMD_TERM_WINDOW = 2, APP_CMD_PAUSE = 13 };
 #define AINPUT_EVENT_TYPE_KEY 1
 #define AINPUT_EVENT_TYPE_MOTION 2
 #define AKEYCODE_BACK 4

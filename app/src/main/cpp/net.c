@@ -201,6 +201,7 @@ void net_init(Net *n) {
     memset(n, 0, sizeof *n);
     n->sock = n->dsock = -1;
     n->rtt_ms = -1;
+    n->t_other_ver = -1e9;
     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
     n->rng = (uint32_t)(ts.tv_nsec ^ (ts.tv_sec * 2654435761u) ^ (uintptr_t)n ^ (uint32_t)getpid() * 40503u);
     if (!n->rng) n->rng = 1;
@@ -307,7 +308,8 @@ static void add_room(Net *n, uint32_t ip, const uint8_t *pl, int pn, double now)
 }
 
 static void handle(Net *n, uint32_t sip, uint16_t sport, const uint8_t *b, int len, double now) {
-    if (len < HDR || b[0] != 'B' || b[1] != 'K' || b[2] != NET_PROTO_VER) return;
+    if (len >= HDR && b[0] == 'B' && b[1] == 'K' && b[2] != NET_PROTO_VER) { n->t_other_ver = now; return; }   // boshqa versiya
+    if (len < HDR || b[0] != 'B' || b[1] != 'K') return;
     uint8_t type = b[3];
     uint32_t sess = rd32(b + 4);
     uint16_t seq = rd16(b + 8);

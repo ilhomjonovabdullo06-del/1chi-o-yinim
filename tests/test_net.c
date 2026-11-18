@@ -190,6 +190,15 @@ int main(void) {
     CHECK(x.nrooms == 1 && x.rooms[0].full == 1, "xona ro'yxatda 'band' belgisi bilan");
     X = NULL;
 
+    printf("N13b: boshqa versiyadagi ilova aniqlanadi\n");
+    fresh(); net_init(&x); x.loopback_test = 1; net_search(&x); X = &x;
+    RUN(0.3, 0);
+    CHECK(x.t_other_ver < 0, "boshida boshqa versiya ko'rinmagan");
+    uint8_t oldver[24] = { 'B', 'K', NET_PROTO_VER - 1, 16 }; raw_send(NET_DISCOVERY_PORT, oldver, 24);
+    RUN(0.3, x.t_other_ver > 0);
+    CHECK(x.t_other_ver > 0 && x.nrooms == 0, "eski versiya paketi xona emas, lekin ogohlantirish belgisi qo'yildi");
+    X = NULL;
+
     printf("N14: IDLE holatida xavfsizlik\n");
     fresh();
     CHECK(net_send(&h, 1, "a", 1) == -1, "ulanmasdan net_send rad etiladi");

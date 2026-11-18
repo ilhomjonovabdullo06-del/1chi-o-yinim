@@ -2,18 +2,50 @@ plugins {
     id 'com.android.application'
 }
 
+// Release imzosi GitHub Actions orqali (Secrets) beriladi. Mahalliy qurishda bo'lmasa, imzosiz qoladi.
+def keystorePath = System.getenv('BOKS_KEYSTORE')
+// Har qurishda oshib boradigan versiya raqami (release.yml GitHub run raqamini beradi)
+def vcode = project.hasProperty('boksVersionCode') ? project.property('boksVersionCode').toString().toInteger() : 1
+
 android {
-    namespace 'com.example.boks'
-    compileSdk 34
+    // namespace: ichki Java paketi (o'zgartirmang). applicationId: Play'dagi noyob ID (pastda).
+    namespace 'uz.boks.game'
+    compileSdk 36
     ndkVersion '26.1.10909125'
 
     defaultConfig {
-        applicationId 'com.example.boks'
+        // DIQQAT: Play'ga birinchi yuklashdan keyin applicationId o'zgarmaydi. "com.example" Play'da qabul qilinmaydi.
+        applicationId 'io.github.ilhomjonovabdullo06.boks'
         minSdk 24
-        targetSdk 34
-        versionCode 1
+        targetSdk 36
+        versionCode vcode
         versionName '1.0'
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('BOKS_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('BOKS_KEY_ALIAS')
+                keyPassword System.getenv('BOKS_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (keystorePath) {
+                signingConfig signingConfigs.release
+            }
+            ndk { debugSymbolLevel 'FULL' }   // Play Console'da native xatolarni o'qish uchun simvollar
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
     }
 
     externalNativeBuild {

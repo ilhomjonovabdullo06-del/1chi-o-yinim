@@ -7,10 +7,10 @@
 #include <stdint.h>
 #include "game.h"
 
-#define SYNC_VER 1
+#define SYNC_VER 2          // 2: himoya charchog'i (gscale + fatigue bayrog'i)
 #define SYNC_K_SNAP 1       // xost -> mehmon, sekundiga ~30 marta
 #define SYNC_K_INPUT 2      // mehmon -> xost, har kadrda
-#define SYNC_SNAP_LEN 44
+#define SYNC_SNAP_LEN 48
 #define SYNC_INPUT_LEN 8
 
 typedef struct {

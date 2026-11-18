@@ -14,6 +14,23 @@
 #define GLOVE_R 2.6f
 #define SHOULDER 5.f
 #define HIT_V 70.f        // shundan sekin harakat zarba hisoblanmaydi
+// ---- BALANS (hammasi shu yerda sozlanadi) ----
+#define DMG_BASE 1.2f     // toza zarba: DMG_BASE + DMG_VAR * kuch (kuch 0..1, qo'lqop tezligidan)
+#define DMG_VAR  3.3f     //   => eng kuchli zarba ~4.5 HP, nokaut uchun ~22 ta toza zarba
+#define BLOCK_BASE 0.1f   // bloklangan zarba: BLOCK_BASE + BLOCK_VAR * kuch
+#define BLOCK_VAR  0.4f
+// ---- HIMOYA CHARCHOG'I (qo'shimcha qiyinlik; yoqilganda ikkala jangchiga ham, har qo'lga alohida) ----
+#define GUARD_ON    0.25f // shundan kuchli himoya "ushlab turilgan" hisoblanadi (blok ham shu chegaradan)
+#define FAT_START   3.0f  // shuncha soniya uzluksiz ushlangach doira kichraya boshlaydi
+#define FAT_RAMP    2.0f  // keyingi shuncha soniyada 1 dan FAT_MIN gacha kichrayadi
+#define FAT_MIN     0.1f  // eng kichik ko'paytiruvchi (10 baravar kichik)
+#define FAT_RECOVER 1.5f  // himoya bo'shatilganda hisoblagich sekundiga shuncha kamayadi (tiklanish)
+#ifndef AI_BLOCK_PCT
+#define AI_BLOCK_PCT 55   // o'yinchi zarbasini ko'rganda AI bloklash ehtimoli (%), oddiy qiyinlikda
+#endif
+#ifndef AI_BLOCK_PCT_FAST
+#define AI_BLOCK_PCT_FAST 65   // 2- va 3-qiyinlikda
+#endif
 
 static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 
@@ -52,7 +69,7 @@ void game_reset(Game *g) {
     g->f[1].x = 0; g->f[1].y = -22;
     for (int i = 0; i < 2; i++) {
         g->f[i].hp = 100;
-        for (int k = 0; k < 2; k++) { g->f[i].glove[k][0] = REST_F; g->f[i].glove[k][1] = 0; }
+        for (int k = 0; k < 2; k++) { g->f[i].glove[k][0] = REST_F; g->f[i].glove[k][1] = 0; g->f[i].gscale[k] = 1.f; }
     }
     for (int i = 0; i < 2; i++) {
         frame(&g->f[i], &g->f[1 - i]);
@@ -81,6 +98,25 @@ static void arm_target(const float in[2], float *tf, float *ts, float *guard) {
     }
 }
 
+// Qo'lqop siljishini kerakli joyga qarab suradi (tezlik chegarasi bilan). game_step va prediksiya ikkalasi ishlatadi.
+static void arm_follow(float gl[2], float tf, float ts, float dt) {
+    float k_ = clampf(GLOVE_K * dt, 0, 1);
+    float sf = (tf - gl[0]) * k_, ss = (ts - gl[1]) * k_;
+    float len = hypotf(sf, ss), mx = VMAX * dt;
+    if (len > mx) { sf *= mx / len; ss *= mx / len; }
+    gl[0] += sf; gl[1] += ss;
+}
+
+// Mehmon prediksiyasi: o'z qo'llarini xostni kutmasdan, aynan shu qoidalar bilan harakatlantirish (faqat ko'rinish uchun).
+void game_predict_arms(float glove[2][2], float guard[2], const Input *in, float dt) {
+    for (int k = 0; k < 2; k++) {
+        float tf, ts, gd;
+        arm_target(in->arm[k], &tf, &ts, &gd);
+        guard[k] = gd;
+        arm_follow(glove[k], tf, ts, dt);
+    }
+}
+
 static void resolve_hits(Game *g, float dt) {
     for (int a = 0; a < 2; a++) {
         Fighter *A = &g->f[a], *D = &g->f[1 - a];
@@ -92,15 +128,16 @@ static void resolve_hits(Game *g, float dt) {
             for (int j = 0; j < 2; j++) {
                 if (D->guard[j] < 0.25f) continue;        // faqat himoya holatidagi qo'l bloklaydi
                 float rg = 1.f + 5.f * D->guard[j];
-                if (seg_dist(A->pgx[k], A->pgy[k], A->gx[k], A->gy[k], D->gx[j], D->gy[j]) < rg + GLOVE_R) blocked = 1;
+                // charchoq qoidasida butun blok chegarasi (qo'lqop radiusi bilan) gscale ga ko'paytiriladi
+                if (seg_dist(A->pgx[k], A->pgy[k], A->gx[k], A->gy[k], D->gx[j], D->gy[j]) < (rg + GLOVE_R) * D->gscale[j]) blocked = 1;
             }
             int body = seg_dist(A->pgx[k], A->pgy[k], A->gx[k], A->gy[k], D->x, D->y) < BODY_R + GLOVE_R;
             if (!blocked && !body) continue;
             if (blocked) {
-                D->hp -= 0.2f + 0.8f * s;
+                D->hp -= BLOCK_BASE + BLOCK_VAR * s;
                 g->blocks[1 - a]++;
             } else {
-                D->hp -= 2.f + 6.f * s;
+                D->hp -= DMG_BASE + DMG_VAR * s;
                 D->flash = 0.15f;
                 float dx = D->x - A->x, dy = D->y - A->y, d = hypotf(dx, dy) + 0.001f;
                 D->x += dx / d * 2.f; D->y += dy / d * 2.f;
@@ -141,11 +178,11 @@ void game_step(Game *g, float dt, const Input in[2]) {
             float tf, ts, gd;
             arm_target(in[i].arm[k], &tf, &ts, &gd);
             f->guard[k] = gd;
-            float k_ = clampf(GLOVE_K * dt, 0, 1);
-            float sf = (tf - f->glove[k][0]) * k_, ss = (ts - f->glove[k][1]) * k_;
-            float len = hypotf(sf, ss), mx = VMAX * dt;
-            if (len > mx) { sf *= mx / len; ss *= mx / len; }
-            f->glove[k][0] += sf; f->glove[k][1] += ss;
+            if (g->fatigue && gd >= GUARD_ON) f->gtime[k] += dt;
+            else f->gtime[k] = f->gtime[k] > FAT_RECOVER * dt ? f->gtime[k] - FAT_RECOVER * dt : 0.f;
+            float tt = f->gtime[k] - FAT_START;
+            f->gscale[k] = (!g->fatigue || tt <= 0) ? 1.f : (tt >= FAT_RAMP ? FAT_MIN : 1.f - (1.f - FAT_MIN) * tt / FAT_RAMP);
+            arm_follow(f->glove[k], tf, ts, dt);
         }
         glove_world(f);
     }
@@ -182,7 +219,7 @@ void ai_input(Game *g, float dt, int diff, Input *o) {
     float pv = p->vt[0] > p->vt[1] ? p->vt[0] : p->vt[1];
     if (pv > 100 && !a->seen) {
         a->seen = 1;
-        if (a->state == 0 && a->block <= 0 && (rand() % 100) < 30) a->block = 0.5f;
+        if (a->state == 0 && a->block <= 0 && (rand() % 100) < (fast ? AI_BLOCK_PCT_FAST : AI_BLOCK_PCT)) a->block = 0.5f;
     }
     if (pv < 50) a->seen = 0;
 
